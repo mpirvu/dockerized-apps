@@ -1,0 +1,6 @@
+#!/bin/bash
+cd $JMETER_HOME
+
+echo jmeter -n -t petclinic_2018_parms.jmx -j /output/petclinic.stats -JPETCLINIC_HOST=$JHOST -JPETCLINIC_PORT=$JPORT -JTHREADS=$JTHREADS -JDURATION=$JDURATION -JLOOPS=-1 -JTHINKTIME=$JTHINKTIME
+exec jmeter -n -t petclinic_2018_parms.jmx -j /output/petclinic.stats -JPETCLINIC_HOST=$JHOST -JPETCLINIC_PORT=$JPORT -JTHREADS=$JTHREADS -JDURATION=$JDURATION -JLOOPS=-1 -JTHINKTIME=$JTHINKTIME
+

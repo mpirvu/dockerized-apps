@@ -1,0 +1,14 @@
+FROM adoptopenjdk/openjdk11-openj9:x86_64-ubuntu-jre11u-nightly
+
+WORKDIR /work
+RUN chmod 777 /work
+COPY --chown=1001:0 spring-petclinic-2.3.0.BUILD-SNAPSHOT.jar /work/application.jar
+COPY --chown=1001:0 scriptToRunInsideDocker.sh /work/scriptToRunInsideDocker.sh
+EXPOSE 8080
+USER 1001:0
+
+COPY --chown=1001:0 populate_scc.sh /work/populate_scc.sh
+RUN ./populate_scc.sh
+
+
+CMD ["/work/scriptToRunInsideDocker.sh"]
