@@ -1,0 +1,46 @@
+# Dockerfile to build a jmeter container able to drive petclinic 
+# Results appear on /output in the container (/output/petclinic.stats)
+FROM adoptopenjdk/openjdk8-openj9:jre 
+
+ENV JMETER_VERSION 3.3
+
+# Install pre-requisite packages
+RUN apt-get update && apt-get install -y --no-install-recommends wget unzip \
+       && rm -rf /var/lib/apt/lists/*
+
+# Install jmeter 
+RUN   mkdir /jmeter \
+        && mkdir /output \
+        && cd /jmeter/ \
+        && wget https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-$JMETER_VERSION.tgz \
+        && tar -xzf apache-jmeter-$JMETER_VERSION.tgz \ 
+        && rm apache-jmeter-$JMETER_VERSION.tgz 
+
+# Set jmeter home, add jmeter to the PATH and set JVM options
+ENV JMETER_HOME="/jmeter/apache-jmeter-$JMETER_VERSION"
+ENV PATH="$JMETER_HOME/bin:$PATH"
+ENV JVM_ARGS="-Xms1g -Xmx1g -Xtune:virtualized"
+
+# We should set summariser.interval=6 in bin/jmeter.properties
+RUN echo 'summariser.interval=6' >> $JMETER_HOME/bin/jmeter.properties
+
+# Copy the script to be executed and other needed files
+COPY DriverFiles/petclinic_2018_parms.jmx $JMETER_HOME/petclinic_2018_parms.jmx
+COPY DriverFiles/applyLoad.sh $JMETER_HOME/bin/applyLoad.sh
+RUN chmod u+x $JMETER_HOME/bin/applyLoad.sh
+
+# Adjust the host this is going to connect to based on an environment variable
+ENV LIBERTYHOST localhost
+
+# Environment variables that we want the user to redefine
+ENV JHOST=localhost \
+    JPORT=8080 \
+    JTHREADS=15 \
+    JDURATION=60 \
+    JTHINKTIME=0
+
+ENTRYPOINT ["applyLoad.sh"]
+#jmeter -n -t petclinic_2018_parms.jmx -j /output/petclinic.stats -JPETCLINIC_HOST=$JHOST -JPETCLINIC_PORT=$JPORT -JTHREADS=$JTHREADS -JDURATION=$JDURATION -JLOOPS=-1 -JTHINKTIME=$JTHINKTIME
+
+
+
