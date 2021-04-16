@@ -1,8 +1,5 @@
 #!/bin/bash
-# Example https://github.com/OpenLiberty/ci.docker/blob/master/releases/latest/kernel/helpers/build/populate_scc.sh
-#if [ "$VERBOSE" != "true" ]; then
-#  exec &>/dev/null
-#fi
+# Example https://github.com/OpenLiberty/ci.docker/blob/master/releases/latest/full/helpers/build/populate_scc.sh
 
 # Safer bash script
 # -e means exit immediately when a command fails
@@ -12,9 +9,8 @@
 # -x print each command before executing it.
 set -Eeuox pipefail
 
-SCC_SIZE="40m"  # Default size of the SCC layer.
+SCC_SIZE="45m"  # Default size of the SCC layer.
 ITERATIONS=2    # Number of iterations to run to populate it.
-TRIM_SCC=yes    # Trim the SCC to eliminate any wasted space.
 
 echo $PWD
 
@@ -33,20 +29,11 @@ do
       [ "${OPTARG: -1}" == "m" ] || ( echo "Missing m suffix." && exit 1 )
       SCC_SIZE="$OPTARG"
       ;;
-    t)
-      TRIM_SCC=yes
-      ;;
-    d)
-      TRIM_SCC=no
-      ;;
     h)
       echo \
-"Usage: $0 [-i iterations] [-s size] [-t] [-d]
+"Usage: $0 [-i iterations] [-s size]
   -i <iterations> Number of iterations to run to populate the SCC. (Default: $ITERATIONS)
-  -s <size>       Size of the SCC in megabytes (m suffix required). (Default: $SCC_SIZE)
-  -t              Trim the SCC to eliminate most of the free space, if any.
-  -d              Don't trim the SCC.
-  Trimming enabled=$TRIM_SCC"
+  -s <size>       Size of the SCC in megabytes (m suffix required). (Default: $SCC_SIZE)"
       exit 1
       ;;
     \?)
@@ -63,8 +50,7 @@ done
 OLD_UMASK=`umask`
 umask 002 # 002 is required to provide group rw permission to the cache when `-Xshareclasses:groupAccess` options is used
 
-# Explicity create a class cache layer for this image layer here rather than allowing
-# `server start` to do it, which will lead to problems because multiple JVMs will be started.
+# Explicity create a class cache layer for this image layer here
 java $CREATE_LAYER -Xscmx$SCC_SIZE -version
 
 # Populate the newly created class cache layer.
