@@ -33,6 +33,7 @@
 # loadTime: Duration of JMeter load in seconds
 # numClients: Number of JMeter threads
 # maxUsers: Maximum number of simulated AcmeAir users
+# mongoPropertiesStanza = full path to the 'AcmeAir/LibertyContext/LibertyFiles/mongo.properties' file (or a copy of it)
 
 # Note that, at the moment, changing the CPU/memory limits or options for JITServer needs 
 # to be done by modifying `startJITServer` routine
@@ -388,17 +389,18 @@ def getJMeterSummary(containerName, jmeterMachine, username):
     lines = output.splitlines()
   
     # Find the last line that contains
-    # summary = 110757 in    30s = 3688.6/s Avg:    12 Min:     0 Max:   894 Err:     0 (0.00%)
+    # summary = 451761 in 00:03:43 = 2029.0/s Avg:     0 Min:     0 Max:   698 Err:     0 (0.00%)
+
     elapsedTime = 0
     throughput = 0
     for line in lines:
-        pattern = re.compile('.*summary =\s+\d+ in\s+(\d+\.*\d*)s =\s+(\d+\.\d+)/s')
+        pattern = re.compile('.*summary =\s+\d+ in\s+(\d+):(\d+):(\d+)\s+=\s+(\d+\.\d+)/s')
         m = pattern.match(line)
         if m:
-            # First group is the interval of time that passed
-            elapsedTime = float(m.group(1))
-            # Second group is the throughput value
-            throughput = float(m.group(2))
+            # First 3 groups represent the interval of time that passed
+            elapsedTime = int(m.group(1))*3600 + int(m.group(2))*60 + int(m.group(3))
+            # Fourth group is the throughput value
+            throughput = float(m.group(4))
     #print (str(elapsedTime), throughput, sep='\t')
     return throughput, elapsedTime
 
@@ -429,7 +431,7 @@ def threadFunction(id, username, numIter, libImage, libertyMachine, port, cpuLim
     # Copy the mongoPropertiesStanza file remotely and change the appropriate machine
     cmd = f"scp {mongoPropertiesStanza} {username}@{libertyMachine}:{mongoPropertiesFile}"
     subprocess.check_output(shlex.split(cmd), universal_newlines=True)
-    remoteCmd = f"sed -i 's/localhost/{mongoMachine}/' {mongoPropertiesFile}"
+    remoteCmd = f"sed -i 's/mongodb/{mongoMachine}/' {mongoPropertiesFile}"
     cmd = f"ssh {username}@{libertyMachine} \"{remoteCmd}\""
     subprocess.check_output(shlex.split(cmd), universal_newlines=True)
 
