@@ -1,0 +1,23 @@
+# Dockerfile used for creating a container capable to run DT8 
+FROM ibmcom/websphere-liberty:21.0.0.6-kernel-java8-openj9-ubi 
+
+COPY --chown=1001:0 LibertyFiles/io.openliberty.sample.daytrader8.war /config/apps
+COPY --chown=1001:0 LibertyFiles/bootstrap.properties /config/bootstrap.properties
+COPY --chown=1001:0 LibertyFiles/server.xml /config/server.xml
+COPY --chown=1001:0 LibertyFiles/db2 /opt/ibm/wlp/usr/shared/resources/db2
+
+# The following line is needed if "jre" directory does not exist
+ENV JAVA_HOME=/opt/java/openjdk
+ENV PATH="/opt/java/openjdk/bin:${PATH}"
+ENV tradeDbHost="192.168.1.7"
+ENV tradeDbPort=50000
+ENV dbUser=db2inst1
+ENV dbPass=p@ssw0rd
+ENV tradeDbName=tradedb
+ENV contextRoot=daytrader
+
+USER 1001:0
+ENV VERBOSE=true
+RUN configure.sh
+RUN mkdir /tmp/vlogs 
+
