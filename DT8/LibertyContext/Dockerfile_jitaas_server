@@ -1,0 +1,10 @@
+FROM adoptopenjdk/openjdk8-openj9:jre8u292-b10_openj9-0.26.0
+#FROM adoptopenjdk/openjdk11-openj9:jre-11.0.11_9_openj9-0.26.0
+ 
+EXPOSE 38400
+# Whack any options set by the OpenJ9 container definition
+ENV OPENJ9_JAVA_OPTIONS=""
+RUN mkdir /tmp/vlogs
+WORKDIR /opt/java
+ENTRYPOINT ["/opt/java/openjdk/bin/jitserver"]
+
