@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<server>
+  <!-- Enable features -->
+  <featureManager>
+    <feature>microProfile-4.0</feature>
+  </featureManager>
+
+  <!-- To access this server from a remote client add a host attribute to the following element, e.g. host="*" -->
+  <httpEndpoint 
+    id="defaultHttpEndpoint" 
+    host="*" 
+    httpPort="${DEFAULT_HTTP_PORT}" 
+    httpsPort="${DEFAULT_HTTPS_PORT}">
+    <accessLogging 
+      enabled="${ACCESS_LOGGING_ENABLED}" 
+      filepath="${server.output.dir}/logs/http_defaultEndpoint_access.log" 
+      logFormat='%h %u %t "%r" %s %b %D %{User-agent}i'>
+    </accessLogging>
+  </httpEndpoint>
+
+  <basicRegistry id="basic" realm="WebRealm">
+    <user name="${env.USERNAME}" password="${env.PASSWORD}" />
+  </basicRegistry>
+
+  <administrator-role>
+    <user-access-id>user:WebRealm/${env.USERNAME}</user-access-id>
+  </administrator-role>
+
+  <!-- Basic User Registry not to be used on /customer URL requests -->
+  <authFilter id="mpJwtAuthFilter">
+    <requestUrl id="request" urlPattern="/customer" matchType="notContain" />
+  </authFilter>
+
+  <mpJwt id="jwtUserConsumer" authFilterRef="mpJwtAuthFilter" ignoreApplicationAuthMethod="false" mapToUserRegistry="true" />
+
+  <logging 
+    consoleFormat="${LOGGING_FORMAT}" 
+    consoleSource="message,trace,accessLog,ffdc,audit" 
+    messageFormat="${LOGGING_FORMAT}" 
+    messageSource="message,trace,accessLog,ffdc,audit" 
+    traceSpecification="${TRACE_SPEC}" />
+
+  <webApplication name="acmeair-customerservice" location="acmeair-customerservice-java-4.0.war" contextRoot="/customer">
+    <!-- enable visibility to third party apis -->
+    <classloader apiTypeVisibility="api,ibm-api,spec,stable,third-party" />
+  </webApplication>
+
+  <keyStore id="defaultKeyStore" password="secret" />
+
+  <cors 
+    domain="/customer" 
+    allowedOrigins="*" 
+    allowedMethods="GET, DELETE, POST, OPTIONS" 
+    allowedHeaders="*" 
+    allowCredentials="true" 
+    maxAge="3600" />
+
+</server>
