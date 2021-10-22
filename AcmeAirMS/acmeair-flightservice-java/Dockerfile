@@ -1,13 +1,13 @@
 FROM open-liberty:full
 
 # Config
-COPY --chown=1001:0 src/main/liberty/config/server.xml /config/server.xml
-COPY --chown=1001:0 src/main/liberty/config/server.env /config/server.env
-COPY --chown=1001:0 src/main/liberty/config/jvm.options /config/jvm.options
-COPY --chown=1001:0 src/main/liberty/config/bootstrap.properties /config/bootstrap.properties
+COPY --chown=1001:0 server.xml /config/server.xml
+COPY --chown=1001:0 server.env /config/server.env
+COPY --chown=1001:0 jvm.options /config/jvm.options
+COPY --chown=1001:0 bootstrap.properties /config/bootstrap.properties
 
 # App
-COPY --chown=1001:0 target/acmeair-flightservice-java-4.0.war /config/apps/
+COPY --chown=1001:0 acmeair-flightservice-java-4.0.war /config/apps/
 
 # Logging vars
 ENV LOGGING_FORMAT=simple
