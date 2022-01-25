@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jitserver
+  labels:
+    app: jitserver
+spec:
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: jitserver
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: jitserver
+    spec:
+      containers:
+      - name: jitserver
+        image: 192.168.122.160:32000/jitserver:java8_2022-01-20
+        imagePullPolicy: IfNotPresent
+        #args:
+        ports:
+        - containerPort: 38400
+        resources:
+          requests:
+            memory: "1200Mi"
+            cpu: "1000m"
+          limits:
+            memory: "1350Mi"
+            cpu: "8000m"
+            # Need to leave room for the other processes on the node
+        env:
+        - name: OPENJ9_JAVA_OPTIONS
+          value: ""
+          #value: "-XX:+JITServerShareROMClasses -XX:+JITServerUseAOTCache"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  # a client connect to this end-point
+  name: jitserver
+spec:
+  # ClusterIP allows connections only from inside the cluster (default)
+  type: ClusterIP
+  # Service routes traffic only to pods with matching labels
+  selector:
+    app: jitserver
+  ports:
+    - protocol: TCP
+      # port used to connect to service
+      port: 38400
+      # Service routes traffic to this pod port
+      targetPort: 38400
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 86400 
+

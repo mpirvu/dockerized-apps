@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: acmeair
+  labels:
+    app: acmeair
+spec:
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: acmeair
+  replicas: 1 
+  template:
+    metadata:
+      labels:
+        app: acmeair
+    spec:
+      containers:
+      - name: acmeair
+        # liberty-acmeair:hotspot_11
+        # liberty-acmeair:openj9_11_0310
+        image: 192.168.122.160:32000/liberty-acmeair:java8_2022-01-20
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9090
+        resources:
+          requests:
+            memory: "225Mi"
+            cpu: "500m"
+          limits:
+            memory: "225Mi"
+            cpu: "1000m"
+        readinessProbe:
+          httpGet:
+            path: /acmeair-webapp
+            port: 9090
+          initialDelaySeconds: 4 
+          periodSeconds: 2
+          failureThreshold: 5
+        env:
+        - name: TR_PrintCompTime
+          value: "1"
+        - name: TR_PrintCompStats
+          value: "1"
+        - name: JVM_ARGS
+          #value: "-Xjit:enableJITServerHeuristics,GCRQueuedThresholdForCounting=200,smallMethodBytecodeSizeThresholdForJITServerAOTCache=0 -XX:+UseJITServer -XX:JITServerAddress=jitserver -XX:+JITServerUseAOTCache"
+          value: "-Xjit:enableJITServerHeuristics -XX:+UseJITServer -XX:JITServerAddress=jitserver"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: acmeair-mono-service
+spec:
+  ports:
+    - port: 9090
+  selector:
+    app: acmeair
+
