@@ -1,0 +1,74 @@
+apiVersion: autoscaling/v2beta2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: acmeair-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: acmeair
+  minReplicas: 1 
+  maxReplicas: 15
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 100
+#  - type: Resource
+#    resource:
+#      name: memory
+#      target:
+#        type: AverageValue
+#        averageValue: 450Mi
+  # Uncomment these lines if you create the custom packets_per_second metric and
+  # configure your app to export the metric.
+  # - type: Pods
+  #   pods:
+  #     metric:
+  #       name: packets_per_second
+  #     target:
+  #       type: AverageValue
+  #       averageValue: 100
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 100 
+      policies:
+      - type: Pods
+        value: 4
+        periodSeconds: 15
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+      selectPolicy: Max
+    scaleUp:
+      policies:
+      - type: Pods
+        value: 4
+        periodSeconds: 70
+      - type: Percent
+        value: 100 
+        periodSeconds: 15
+      selectPolicy: Max
+      stabilizationWindowSeconds: 0
+
+
+
+#apiVersion: autoscaling/v2beta1
+#kind: HorizontalPodAutoscaler
+#metadata:
+#  name: acmeair-hpa
+#spec:
+#  scaleTargetRef:
+#    apiVersion: apps/v1
+#    kind: Deployment
+#    name: acmeair 
+#  minReplicas: 2
+#  maxReplicas: 15
+#  metrics:
+#    - resource:
+#        name: cpu
+#        targetAverageUtilization: 100 
+#      type: Resource
+
