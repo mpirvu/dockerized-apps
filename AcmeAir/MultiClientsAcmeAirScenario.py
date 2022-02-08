@@ -14,7 +14,7 @@
 # The script is multithreaded and the number of threads is L. Each thread starts a 
 # Liberty instance, applies load to it, stops the instance and repeats.
 
-# To configure the benchmark for your needs shange the following variables
+# To configure the benchmark for your needs change the following variables
 # libertyImage
 # JITServerImage
 # jmeterImage
@@ -45,6 +45,9 @@ import datetime # for datetime.datetime.now()
 import sys # for exit
 import threading
 import logging # https://www.machinelearningplus.com/python/python-logging-guide/
+
+# For using a JDK from outside containers we must map    -v MYJDK:/opt/java/openjdk
+# For sharing the SCC among containers we must use volumes    --mount source=VolumeName:DirForSCC
 
 # Given a list of dictionaries, compute the mean for each key individually
 def dict_mean(dict_list):
@@ -182,6 +185,8 @@ def verifyLibertyHasStarted(instanceName, host, username):
         return False
     if len(lines) > 1:
         logging.error("More than one liberty instance has been found active")
+    errPattern = re.compile('.+\[ERROR')
+    readyPattern = re.compile(".+is ready to run a smarter planet")
     for containerID in lines:
         for iter in range(10):
             remoteCmd = f"docker logs --tail=100 {containerID}"
@@ -189,13 +194,11 @@ def verifyLibertyHasStarted(instanceName, host, username):
             output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
             liblines = output.splitlines()
             for line in liblines:
-                pattern = re.compile('.+\[ERROR')
-                m = pattern.match(line)
+                m = errPattern.match(line)
                 if m:
                     logging.warning("Liberty container {instanceName} errored while starting: {line}").format(instanceName=instanceName,line=line)
                     return False
-                pattern1 = re.compile(".+is ready to run a smarter planet")
-                m1 = pattern1.match(line)
+                m1 = readyPattern.match(line)
                 if m1:
                     return True # True means success
             time.sleep(1) # wait 1 sec and try again
@@ -213,17 +216,17 @@ def verifyLibertyContainerIDStarted(instanceID, host, username):
   
     remoteCmd = f"docker logs --tail=100 {instanceID}"
     cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    errPattern = re.compile('.+\[ERROR')
+    readyPattern = re.compile(".+is ready to run a smarter planet")
     for iter in range(10):   
         output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
         liblines = output.splitlines()
         for line in liblines:
-            pattern = re.compile('.+\[ERROR')
-            m = pattern.match(line)
+            m = errPattern.match(line)
             if m:
                 logging.warning("Liberty container {instanceID} errored while starting: {line}").format(instanceID=instanceID,line=line)
                 return False
-            pattern1 = re.compile(".+is ready to run a smarter planet")
-            m1 = pattern1.match(line)
+            m1 = readyPattern.match(line)
             if m1:
                 print(line)
                 return True # True means success
@@ -296,9 +299,9 @@ def getLibertyStartupTime(host, username, containerID, containerStartTimeMs):
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
     # [10/29/20, 23:18:49:468 UTC] 00000024 com.ibm.ws.kernel.feature.internal.FeatureManager            A CWWKF0011I: The defaultServer server is ready to run a smarter planet. The defaultServer server started in 2.885 seconds.
     lines = s.splitlines()
+    readyPattern = re.compile('\[(.+)\] .+is ready to run a smarter planet')
     for line in lines:
-        pattern = re.compile('\[(.+)\] .+is ready to run a smarter planet')
-        m = pattern.match(line)
+        m = readyPattern.match(line)
         if m:
             timestamp = m.group(1)
             # [10/29/20, 17:53:03:894 EDT] 
@@ -338,9 +341,9 @@ def getCompCPUFromContainer(host, username, instanceID):
     cmd = f"ssh {username}@{host} \"{remoteCmd}\""
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True, stderr=subprocess.STDOUT)
     liblines = output.splitlines()
+    compTimePattern = re.compile("Time spent in compilation thread =(\d+) ms")
     for line in liblines:
-        pattern = re.compile("Time spent in compilation thread =(\d+) ms")
-        m = pattern.match(line)
+        m = compTimePattern.match(line)
         if m:
             threadTime += int(m.group(1))
     return threadTime
@@ -383,27 +386,67 @@ def stopJMeter(containerName, jmeterMachine, username):
 
 def getJMeterSummary(containerName, jmeterMachine, username):
     logging.debug("Getting throughput info...")
-    remoteCmd = f"docker logs --tail=10 {containerName}"
+    remoteCmd = f"docker logs --tail=100 {containerName}"
     cmd = f"ssh {username}@{jmeterMachine} \"{remoteCmd}\""
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
     lines = output.splitlines()
-  
-    # Find the last line that contains
-    # summary = 451761 in 00:03:43 = 2029.0/s Avg:     0 Min:     0 Max:   698 Err:     0 (0.00%)
 
+    # Find the last line that contains
+    # summary = 110757 in    30s = 3688.6/s Avg:    12 Min:     0 Max:   894 Err:     0 (0.00%)
+    # or
+    # summary = 233722 in 00:02:00 = 1947.4/s Avg:     0 Min:     0 Max:   582 Err:     0 (0.00%)
     elapsedTime = 0
     throughput = 0
+    totalTransactions = 0
+    lastSummaryLine = ""
+    queue = []
+    pattern1 = re.compile('summary \+\s+(\d+) in\s+(\d+\.*\d*)s =\s+(\d+\.\d+)/s.+Finished: 0')
+    pattern2 = re.compile('summary \+\s+(\d+) in\s+(\d\d):(\d\d):(\d\d) =\s+(\d+\.\d+)/s.+Finished: 0')
     for line in lines:
-        pattern = re.compile('.*summary =\s+\d+ in\s+(\d+):(\d+):(\d+)\s+=\s+(\d+\.\d+)/s')
-        m = pattern.match(line)
-        if m:
-            # First 3 groups represent the interval of time that passed
-            elapsedTime = int(m.group(1))*3600 + int(m.group(2))*60 + int(m.group(3))
-            # Fourth group is the throughput value
-            throughput = float(m.group(4))
-    #print (str(elapsedTime), throughput, sep='\t')
-    return throughput, elapsedTime
+        # summary +  17050 in 00:00:06 = 2841.7/s Avg:     0 Min:     0 Max:    49 Err:     0 (0.00%) Active: 2 Started: 2 Finished: 0
+        if line.startswith("summary +"):
+            # Uncomment this line if we need to print rampup
+            #print(line)
+            m = pattern1.match(line)
+            if m:
+                thr = float(m.group(3))
+                queue.append(thr)
+            else:
+                m = pattern2.match(line)
+                if m:
+                    thr = float(m.group(5))
+                    queue.append(thr)
 
+        if line.startswith("summary ="):
+            lastSummaryLine = line
+
+    pattern = re.compile('summary =\s+(\d+) in\s+(\d+\.*\d*)s =\s+(\d+\.\d+)/s')
+    m = pattern.match(lastSummaryLine)
+    if m:
+        # First group is the total number of transactions/pages that were processed
+        totalTransactions = float(m.group(1))
+        # Second group is the interval of time that passed
+        elapsedTime = float(m.group(2))
+        # Third group is the throughput value
+        throughput = float(m.group(3))
+    else: # Check the second pattern
+        pattern = re.compile('summary =\s+(\d+) in\s+(\d\d):(\d\d):(\d\d) =\s+(\d+\.\d+)/s')
+        m = pattern.match(lastSummaryLine)
+        if m:
+            # First group is the total number of transactions/pages that were processed
+            totalTransactions = float(m.group(1))
+            # Next 3 groups are the interval of time that passed
+            elapsedTime = float(m.group(2))*3600 + float(m.group(3))*60 + float(m.group(4))
+            # Fifth group is the throughput value
+            throughput = float(m.group(5))
+    # Compute the peak throughput as the average of the last 3 throughput values
+    peakThr = 0.0
+    if len(queue) >= 3:
+        queue = queue[-3:]
+        peakThr = sum(queue)/3.0
+
+    #print (str(elapsedTime), throughput, sep='\t')
+    return throughput, elapsedTime, peakThr
 
 def cleanup(machines, numSlots, JITServerMachine, username, libertyImage, jmeterImage, mongoImage):
     machineSet = {} # remebers the set of all machines we are going to use
@@ -455,10 +498,10 @@ def threadFunction(id, username, numIter, libImage, libertyMachine, port, cpuLim
             logging.info("Wait for {jmeter} to end: {cmd}".format(jmeter=jmeterInstanceName, cmd=cmd))
             output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
             # Read throughput
-            thr, elapsed = getJMeterSummary(containerName=jmeterInstanceName, jmeterMachine=jmeterMachine, username=username)
+            thr, elapsed, peakThr = getJMeterSummary(containerName=jmeterInstanceName, jmeterMachine=jmeterMachine, username=username)
             # Stop JMeter
             stopJMeter(containerName=jmeterInstanceName, jmeterMachine=jmeterMachine, username=username)
-            logging.info("Throughput: {thr} {elapsed}".format(thr=thr,elapsed=elapsed))
+            logging.info("Throughput: {thr} {elapsed} {peakThr}".format(thr=thr,elapsed=elapsed,peakThr=peakThr))
             # Get memory information
             libPID = getMainPIDFromContainer(host=libertyMachine, username=username, instanceID=containerID)
             if int(libPID) > 0:
@@ -473,16 +516,16 @@ def threadFunction(id, username, numIter, libImage, libertyMachine, port, cpuLim
             compCPU = getCompCPUFromContainer(host=libertyMachine, username=username, instanceID=containerID)
             removeContainer(host=libertyMachine, username=username, instanceName=libertyInstanceName)
             resultsLock.acquire()
-            thrValues.append({'thr':thr, 'elapsed':elapsed, 'startup':startTimeMillis, 'cpu':compCPU, 'rss':(rss >> 10), 'peakrss':(peakRss >> 10)})
+            thrValues.append({'thr':thr, 'elapsed':elapsed, 'peakThr':peakThr, 'startup':startTimeMillis, 'cpu':compCPU, 'rss':(rss >> 10), 'peakrss':(peakRss >> 10)})
             resultsLock.release()
         else:
             logging.error("Liberty instance {lib} cannot start in the alloted time".format(lib=libertyInstanceName))
             removeForceContainer(host=libertyMachine, username=username, instanceName=containerID)
        
 ############################### CONFIG ###############################################
-libertyImage   = "liberty-acmeair:openj9_11"
-JITServerImage = "jitaas-server:11_0506"
-jmeterImage    = "mpirvu/jmeteracmeair:2.13"
+libertyImage   = "liberty-acmeair:java8_2022-01-20"
+JITServerImage = "jitserver:java8_2022-01-20"
+jmeterImage    = "jmeter-acmeair:3.3"
 mongoImage     = "mongo-acmeair"
 
 JITServerMachine = "192.168.1.5"
@@ -510,26 +553,26 @@ machines=[
           #{}
 ] #machines
 username="mpirvu" # this user must be able to ssh without a password to all machines
-numConcurrentInstances = 20 
-numIter = 20
+numConcurrentInstances = 4 
+numIter = 2
 
 # Liberty/AcmeAir configuration
 basePort = 9090 # for AcmeAir
 cpuLimit="1"
 memoryLimit="512m"
 delayToStart = 10 # Delay from starting Liberty container and checking that has started
-staggerDelay = 5
-libertyJvmArgs = f"-XX:+UseJITServer -XX:JITServerAddress={JITServerMachine} -XX:JITServerTimeout=10000"
-#libertyJvmArgs = f"-XX:+UseJITServer -XX:JITServerAddress={JITServerMachine} -XX:JITServerTimeout=10000 -Xshareclasses:name=liberty,cacheDir=/output/.classCache/"
+staggerDelay = 10
+libertyJvmArgs = f"-XX:+UseJITServer -XX:JITServerAddress={JITServerMachine}"
+#libertyJvmArgs = f"-XX:+UseJITServer -XX:JITServerAddress={JITServerMachine} -Xshareclasses:name=liberty,cacheDir=/output/.classCache/"
 #libertyJvmArgs = ""
-mongoPropertiesStanza = "/home/mpirvu/JITaaS_Docker/Dockerized_AcmeAir/mongo.properties" # This must have the correct location of the mongo server
+mongoPropertiesStanza = "/home/mpirvu/JITaaS_Docker/dockerized-apps/AcmeAir/LibertyContext/LibertyFiles/mongo.properties" # This must have the correct location of the mongo server
 
 # If verbose logs are needed, create a directory /tmp/vlogs and set permissions
-# for evrybody. The uncomment the following line and set -v /tmp/vlogs:/tmp/vlogs for Liberty container
+# for everybody. The uncomment the following line and set -v /tmp/vlogs:/tmp/vlogs for Liberty container
 #libertyJvmArgs = libertyJvmArgs + " -Xdump:directory=/tmp/vlogs -Xjit:verbose={compilePerformance},verbose={JITServer},verbose={failures},vlog=/tmp/vlogs/vlog.client.txt "
 
 # JMeter configuration
-loadTime = 240 # Duration of load
+loadTime = 180 # Duration of load
 numClients = 2 
 maxUsers = 199
 numUsersPerJMeter = maxUsers//numConcurrentInstances
@@ -576,15 +619,15 @@ stopMongos(machines=machines, numMachines=numConcurrentInstances, username=usern
 stopJITServer(containerName="server", JITServerMachine=JITServerMachine, username=username)
 #print("Throughput values:")
 #print(*thrValues, sep = "\n")
-print("Thr\tTime\tStartup\t CPU\tRSS\tPeakRSS")
+print("Thr\tTime\tPeakThr\tStartup\t CPU\tRSS\tPeakRSS")
 for entry in thrValues:
-    print("{thr:4.1f}\t{duration:4.0f}\t{startup:5d}\t{cpu:5d}\t{rss:6d}\t{peakRss:7d}".format(thr=entry.get('thr'), 
-        duration=entry.get('elapsed'), startup=entry.get('startup'), cpu=entry.get('cpu'), rss=entry.get('rss'), peakRss=entry.get('peakrss')))
+    print("{thr:4.1f}\t{duration:4.0f}\t{peakThr:4.1f}\t{startup:5d}\t{cpu:5d}\t{rss:6d}\t{peakRss:7d}".format(thr=entry.get('thr'),
+        duration=entry.get('elapsed'), peakThr=entry.get('peakThr'), startup=entry.get('startup'), cpu=entry.get('cpu'), rss=entry.get('rss'), peakRss=entry.get('peakrss')))
 # Compute averages
 meanDict = dict_mean(thrValues)
 print("Averages:")
-print("{thr:4.1f}\t{duration:4.0f}\t{startup:5.0f}\t{cpu:5.0f}\t{rss:6.0f}\t{peakRss:7.0f}".format(thr=meanDict.get('thr'), 
-        duration=meanDict.get('elapsed'), startup=meanDict.get('startup'), cpu=meanDict.get('cpu'), rss=meanDict.get('rss'), peakRss=meanDict.get('peakrss')))
+print("{thr:4.1f}\t{duration:4.0f}\t{peakThr:4.1f}\t{startup:5.0f}\t{cpu:5.0f}\t{rss:6.0f}\t{peakRss:7.0f}".format(thr=meanDict.get('thr'),
+        duration=meanDict.get('elapsed'), peakThr=meanDict.get('peakThr'), startup=meanDict.get('startup'), cpu=meanDict.get('cpu'), rss=meanDict.get('rss'), peakRss=meanDict.get('peakrss')))
 
 # Final cleanup
 cleanup(machines, numConcurrentInstances, JITServerMachine, username, libertyImage, jmeterImage, mongoImage)
