@@ -1,0 +1,117 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: acmeair-flightservice
+spec:
+  replicas: 1 
+  selector:
+    matchLabels:
+      name: acmeair-flight-deployment
+  template:
+    metadata:
+      labels:
+        name: acmeair-flight-deployment
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9080"
+    spec:
+      containers:
+      - name: acmeair-flightservice-java
+        image: 192.168.122.160:32000/acmeair-mainservice-java_acmeair-flightservice-java:latest 
+        ports:
+          - containerPort: 9080
+          - containerPort: 9443
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: USERNAME
+          value: admin
+        - name: PASSWORD
+          value: password
+        - name: MONGO_HOST
+          value: acmeair-flight-db
+        - name: SECURE_SERVICE_CALLS
+          value: 'true'
+        - name: _JAVA_OPTIONS
+          value: ""
+        resources:
+          requests:
+            memory: "400Mi"
+            cpu: "500m"
+          limits:
+            memory: "400Mi"
+            cpu: "1000m"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 9080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 9080
+          initialDelaySeconds: 120
+          periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: acmeair-flight-service
+spec:
+  ports:
+    - port: 9080
+  selector:
+    name: acmeair-flight-deployment
+---
+##### Flight Database #####
+apiVersion: v1
+kind: Service
+metadata:
+  creationTimestamp: null
+  labels:
+    service: acmeair-flight-db
+  name: acmeair-flight-db
+spec:
+  ports:
+  - name: "27017"
+    port: 27017
+    protocol: TCP
+    targetPort: 27017
+  selector:
+    name: acmeair-flight-db
+status:
+  loadBalancer: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  creationTimestamp: null
+  name: acmeair-flight-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: acmeair-flight-db
+  strategy: {}
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        name: acmeair-flight-db
+    spec:
+      containers:
+      - image: mongo
+        name: acmeair-flight-db
+        ports:
+        - containerPort: 27017
+          protocol: TCP
+        #resources: {}
+        resources:
+          requests:
+            memory: "500Mi"
+            cpu: "100m"
+          limits:
+            memory: "500Mi"
+            cpu: "2000m"
+      restartPolicy: Always
+status: {}

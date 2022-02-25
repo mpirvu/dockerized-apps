@@ -49,7 +49,9 @@ ENV JPORT=9090 \
     JUSER=199 \
     JURL=acmeair-webapp \
     JTHREAD=15 \
-    JDURATION=60
+    JDURATION=60 \
+    JRAMPUP=0 \
+    JTHINKTIME=0
 
 ENTRYPOINT ["applyLoad.sh"]
 #jmeter -n -DusePureIDs=true -t AcmeAir-v3.jmx -j /tmp/acmeair.stats.0 -JPORT=9090 -JUSER=99 -JURL=acmeair-webapp -JTHREAD=15 -JDURATION=600

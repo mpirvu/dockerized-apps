@@ -1,0 +1,21 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    haproxy.org/ingress.class: "haproxy"
+    haproxy.org/load-balance: "roundrobin"
+    haproxy.org/ssl-redirect: "false"
+    #haproxy.org/request-set-header: Connection keep-alive
+  name: acmeair-main-ingress
+spec:
+  rules:
+  - host:
+    http:
+      paths:
+      - pathType: Prefix
+        path: /acmeair
+        backend:
+          service: 
+            name: acmeair-main-service
+            port: 
+              number: 9080

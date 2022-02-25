@@ -1,0 +1,121 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: acmeair-bookingservice
+spec:
+  replicas: 1 
+  selector:
+    matchLabels:
+      name: acmeair-booking-deployment
+  template:
+    metadata:
+      labels:
+        name: acmeair-booking-deployment
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9080"
+    spec:
+      containers:
+      - name: acmeair-bookingservice-java
+        image: 192.168.122.160:32000/acmeair-mainservice-java_acmeair-bookingservice-java:latest
+        ports:
+          - containerPort: 9080
+          - containerPort: 9443
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: USERNAME
+          value: admin
+        - name: PASSWORD
+          value: password
+        - name: MONGO_HOST
+          value: acmeair-booking-db
+        - name: ACMEAIR_STACKAA_AUTH_URL
+          value: "http://acmeair-auth-service:9080/auth"
+        - name: ACMEAIR_STACKAA_CUSTOMER_URL
+          value: "http://acmeair-customer-service:9080/customer"
+        - name: ACMEAIR_STACKAA_FLIGHT_URL
+          value: "http://acmeair-flight-service:9080/flight"
+        - name: _JAVA_OPTIONS
+          value: ""
+        resources:
+          requests:
+            memory: "500Mi"
+            cpu: "500m"
+          limits:
+            memory: "500Mi"
+            cpu: "1000m"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 9080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 9080
+          initialDelaySeconds: 120
+          periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: acmeair-booking-service
+spec:
+  ports:
+    - port: 9080
+  selector:
+    name: acmeair-booking-deployment
+---
+##### Booking Database  #####
+apiVersion: v1
+kind: Service
+metadata:
+  creationTimestamp: null
+  labels:
+    service: acmeair-booking-db
+  name: acmeair-booking-db
+spec:
+  ports:
+  - name: "27017"
+    port: 27017
+    protocol: TCP
+    targetPort: 27017
+  selector:
+    name: acmeair-booking-db
+status:
+  loadBalancer: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  creationTimestamp: null
+  name: acmeair-booking-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: acmeair-booking-db
+  strategy: {}
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        name: acmeair-booking-db
+    spec:
+      containers:
+      - image: mongo
+        name: acmeair-booking-db
+        ports:
+        - containerPort: 27017
+          protocol: TCP
+        #resources: {}
+        resources:
+          requests:
+            memory: "500Mi"
+            cpu: "100m"
+          limits:
+            memory: "500Mi"
+            cpu: "2000m"
+      restartPolicy: Always
+status: {}
