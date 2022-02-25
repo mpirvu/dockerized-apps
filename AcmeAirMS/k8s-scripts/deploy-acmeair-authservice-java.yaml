@@ -1,0 +1,63 @@
+###### Main Service ######
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: acmeair-authservice
+spec:
+  replicas: 1 
+  selector:
+    matchLabels:
+      name: acmeair-auth-deployment
+  template:
+    metadata:
+      labels:
+        name: acmeair-auth-deployment
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9080"
+    spec:
+      containers:
+      - name: acmeair-authservice-java
+        image: 192.168.122.160:32000/acmeair-mainservice-java_acmeair-authservice-java:latest 
+        ports:
+          - containerPort: 9080
+          - containerPort: 9443
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: USERNAME
+          value: admin
+        - name: PASSWORD
+          value: password
+        - name: ACMEAIR_STACKAA_CUSTOMER_URL
+          value: "http://acmeair-customer-service:9080/customer"
+        - name: _JAVA_OPTIONS
+          value: ""
+        resources:
+          requests:
+            memory: "350Mi"
+            cpu: "500m"
+          limits:
+            memory: "350Mi"
+            cpu: "1000m"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 9080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 9080
+          initialDelaySeconds: 120
+          periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: acmeair-auth-service
+spec:
+  ports:
+    - port: 9080
+  selector:
+    name: acmeair-auth-deployment

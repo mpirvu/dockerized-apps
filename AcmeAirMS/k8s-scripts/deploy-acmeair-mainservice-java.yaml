@@ -1,0 +1,50 @@
+###### Main Service ######
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: acmeair-mainservice
+spec:
+  replicas: 1 
+  selector:
+    matchLabels:
+      name: acmeair-main-deployment
+  template:
+    metadata:
+      labels:
+        name: acmeair-main-deployment
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9080"
+    spec:
+      containers:
+      - name: acmeair-mainservice-java
+        image: 192.168.122.160:32000/acmeair-mainservice-java_acmeair-mainservice-java:latest 
+        ports:
+        - containerPort: 9080
+        - containerPort: 9443
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: USERNAME
+          value: admin
+        - name: PASSWORD
+          value: password
+        - name: _JAVA_OPTIONS
+          value: ""
+        resources:
+          requests:
+            memory: "200Mi"
+            cpu: "100m"
+          limits:
+            memory: "200Mi"
+            cpu: "1000m"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: acmeair-main-service
+spec:
+  ports:
+    - port: 9080
+  selector:
+    name: acmeair-main-deployment
