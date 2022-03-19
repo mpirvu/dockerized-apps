@@ -11,4 +11,9 @@ build command. Important: the OpenJ9 version from the JITServer container must m
 the OpenJ9 version from the Liberty container.
 Connect the Liberty container to JITServer by providing additional options to
 the Liberty container
- -e JVM_ARGS="-XX:+UseJITServer -XX:JITServerAdress=jitserver_machine"
+ -e JVM_ARGS="-XX:+UseJITServer -XX:JITServerAddress=jitserver_machine -XX:+JITServerLogConnections"
+The option -XX:+JITServerLogConnections will make the JVM from the Liberty
+container to output a message to stderr every time a connection to the 
+JITServer is established. E.g.:
+#JITServer: t=     0 Connected to a server (serverUID=5533460445728875299)
+
