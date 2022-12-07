@@ -10,13 +10,13 @@ ENV JMETER_VERSION 3.3
 RUN apt-get update && apt-get install -y --no-install-recommends wget unzip \
        && rm -rf /var/lib/apt/lists/*
 
-# Install jmeter 
+# Install jmeter
 RUN   mkdir /jmeter \
         && mkdir /output \
         && cd /jmeter/ \
         && wget https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-$JMETER_VERSION.tgz \
-        && tar -xzf apache-jmeter-$JMETER_VERSION.tgz \ 
-        && rm apache-jmeter-$JMETER_VERSION.tgz 
+        && tar -xzf apache-jmeter-$JMETER_VERSION.tgz \
+        && rm apache-jmeter-$JMETER_VERSION.tgz
 
 # Set jmeter home, add jmeter to the PATH and set JVM options
 ENV JMETER_HOME="/jmeter/apache-jmeter-$JMETER_VERSION"
@@ -45,6 +45,7 @@ ENV LIBERTYHOST localhost
 
 # Environment variables that we want the user to redefine
 ENV JPORT=9090 \
+    JPROTOCOL=http \
     JUSERBOTTOM=0 \
     JUSER=199 \
     JURL=acmeair-webapp \
