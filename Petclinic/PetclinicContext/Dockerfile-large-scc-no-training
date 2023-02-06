@@ -1,0 +1,17 @@
+# Petclinic dockerfile which creates a large embedded SCC layer 
+# on top of OpenJ9 system SCC populated layer, but does not populate it
+FROM ibm-semeru-runtimes:open-11.0.17_8-jre-focal
+
+WORKDIR /work
+COPY --chown=1001:0 spring-petclinic-2.3.0.BUILD-SNAPSHOT.jar application.jar
+EXPOSE 8080
+USER 1001:0
+
+# Explicity create a class cache layer for this image layer here
+RUN java -Xshareclasses:name=openj9_system_scc,cacheDir=/opt/java/.scc,createLayer -Xscmx100m -version
+
+# Setup the SCC options matching the system SCC name/location present in IBM Semeru Runtimes
+ENV OPENJ9_JAVA_OPTIONS="-Xshareclasses:name=openj9_system_scc,cacheDir=/opt/java/.scc"
+
+CMD ["java", "-jar", "application.jar"]
+
