@@ -1,14 +1,7 @@
 # Dockerfile used for creating a container capable to run DT7 
-FROM adoptopenjdk/openjdk11-openj9:x86_64-ubuntu-jre11u-nightly as JRE
-FROM openliberty/open-liberty:21.0.0.3-kernel-slim-java11-openj9-ubi
+FROM icr.io/appcafe/open-liberty:22.0.0.13-kernel-slim-java11-openj9-ubi
 
 USER root
-
-# Delete original SDK
-RUN rm -rf /opt/java  /output/.classCache
-
-# Copy the JITServer SDK
-COPY --from=JRE --chown=1001:0  /opt/java /opt/java
 
 COPY --chown=1001:0 LibertyFiles/daytrader-ee7.ear /config/apps
 COPY --chown=1001:0 LibertyFiles/bootstrap.properties /config/bootstrap.properties
@@ -25,5 +18,4 @@ ENV VERBOSE=true
 #ENV OPENJ9_SCC=false
 RUN features.sh
 RUN configure.sh
-RUN mkdir /tmp/vlogs 
 
