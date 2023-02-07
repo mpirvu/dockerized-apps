@@ -1,0 +1,16 @@
+# Petclinic dockerfile which assumes that the user will create
+# a separate SCC (not embedded in containers) and map it in volumes
+FROM ibm-semeru-runtimes:open-11.0.17_8-jre-focal
+
+WORKDIR /work
+COPY --chown=1001:0 spring-petclinic-2.3.0.BUILD-SNAPSHOT.jar application.jar
+EXPOSE 8080
+USER 1001:0
+
+# The user must set OPENJ9_JAVA_OPTIONS to use the SCC mapped in volumes
+# The directory /opt/java/.scc can be reused for this purpose so options 
+# become-Xshareclasses:name=petclinic_scc,cacheDir=/opt/java/.scc 
+ENV OPENJ9_JAVA_OPTIONS=""
+
+CMD ["java", "-jar", "application.jar"]
+
