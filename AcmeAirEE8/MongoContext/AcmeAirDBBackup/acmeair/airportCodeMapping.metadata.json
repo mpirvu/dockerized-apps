@@ -1,0 +1,1 @@
+{"indexes":[{"v":{"$numberInt":"2"},"key":{"_id":{"$numberInt":"1"}},"name":"_id_"}],"uuid":"642dbf9f08df4c95b1fdb5442e55709b","collectionName":"airportCodeMapping","type":"collection"}
