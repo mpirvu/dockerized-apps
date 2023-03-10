@@ -44,6 +44,7 @@ RUN chmod u+x $JMETER_HOME/bin/applyLoad.sh
 
 # Environment variables that we want the user to redefine
 ENV JPORT=9080 
+ENV JUSERBOTTOM=0
 ENV JUSER=199
 ENV JURL=/
 ENV JTHREAD=15
