@@ -86,7 +86,7 @@
         <RandomVariableConfig guiclass="TestBeanGUI" testclass="RandomVariableConfig" testname="Random User id" enabled="true">
           <stringProp name="variableName">USER_ID</stringProp>
           <stringProp name="outputFormat"></stringProp>
-          <stringProp name="minimumValue">0</stringProp>
+	  <stringProp name="minimumValue">${__P(USERBOTTOM,0)}</stringProp>
           <stringProp name="maximumValue">${__P(USER,199)}</stringProp>
           <stringProp name="randomSeed"></stringProp>
           <boolProp name="perThread">false</boolProp>
