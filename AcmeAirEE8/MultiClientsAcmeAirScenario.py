@@ -44,17 +44,32 @@ import datetime # for datetime.datetime.now()
 import sys # for exit
 import threading
 import logging # https://www.machinelearningplus.com/python/python-logging-guide/
+import queue # For FIFO queue
+import math
 
 # For using a JDK from outside containers we must map    -v MYJDK:/opt/java/openjdk
 # For sharing the SCC among containers we must use volumes    --mount source=VolumeName:DirForSCC
 
 
 ############################### CONFIG ###############################################
-docker = "docker" # Select between docker and podman
-libertyImage   = "liberty-acmeair-ee8:J17"
+#level=logging.DEBUG, logging.INFO, logging.WARNING
+logging.basicConfig(level=logging.INFO, format='%(asctime)s :: %(levelname)s :: (%(threadName)-6s) :: %(message)s',)
+
+#docker = "docker" # Select between docker and podman
+#libertyImage   = "liberty-acmeair-ee8:J17-docker"
+#JITServerImage = "icr.io/appcafe/open-liberty:beta-instanton"
+#jmeterImage    = "jmeter-acmeair:5.3"
+#mongoImage     = "mongo-acmeair-ee8:5.0.15"
+
+docker = "podman" # Select between docker and podman
+#libertyImage   = "localhost/liberty-acmeair-ee8:J17-instanton-jitserver"
+#libertyImage   = "localhost/liberty-acmeair-ee8:J17-instanton-256"
+libertyImage   = "localhost/liberty-acmeair-ee8:J17-podman"
+#libertyImage    ="localhost/liberty-acmeair-ee8:J17-podman-noappscc"
+#libertyImage    ="localhost/liberty-acmeair-ee8:J17-podman-noconfigure"
 JITServerImage = "icr.io/appcafe/open-liberty:beta-instanton"
-jmeterImage    = "jmeter-acmeair:5.3"
-mongoImage     = "mongo-acmeair-ee8:5.0.15"
+jmeterImage    = "localhost/jmeter-acmeair:5.3"
+mongoImage     = "localhost/mongo-acmeair-ee8:5.0.15"
 
 useJITServer = False
 
@@ -71,12 +86,14 @@ machines=[
           #{}
 ] #machines
 username="root" # this user must be able to ssh without a password to all machines
-numConcurrentInstances = 8 # Number of Liberty instances to run in parallel
-numIter = 10 # Number of iterations to run
-lockStep = True # If true, parallel Liberty instances will wait at barrier until all have reached it
-staggerDelay = 1 # Delay between starting each concurrent Liberty instance
+netOpts = "--network=slirp4netns" if docker == "podman" else "" # for podman we need to use slirp4netns if running as root. This will be added to Liberty. mongo uses host network. Does JITServer needed it?
+numConcurrentInstances = 1 # Number of Liberty instances to run in parallel
+numIter = 10               # Number of iterations to run
+lockStep = True            # If true, parallel Liberty instances will wait at barrier until all have reached it
+staggerDelay = 1           # Delay between starting each concurrent Liberty instance
 
-# Liberty/AcmeAir configuration
+### Liberty/AcmeAir configuration ###
+instantOnRestore = False # If true, Liberty will restore from a CRIU dump (instantON feature)
 basePort = 9080 # for AcmeAir
 cpuLimit="1"
 memoryLimit="512m"
@@ -86,30 +103,102 @@ useSCCVolume    = False  # set to true to have a SCC mounted in a volume (instea
 SCCVolumeName   = "scc_volume" # Name of the volume to use for the SCC
 sccInstanceDir  = "/opt/java/.scc" # Location of the shared class cache in the instance
 mountOpts       = f"--mount type=volume,src={SCCVolumeName},target={sccInstanceDir}" if useSCCVolume  else ""
-libertyJvmArgs = f""
+libertyJvmArgs  = f"-Xshareclasses:none"
 #libertyJvmArgs = f"-XX:+UseJITServer -XX:JITServerAddress={JITServerMachine} -Xshareclasses:name=liberty,cacheDir=/output/.classCache/"
-#libertyJvmArgs = f"-Xshareclasses:name=myscc,cacheDir={sccInstanceDir}"
+#libertyJvmArgs = f"-Xshareclasses:name=myscc,cacheDir={sccInstanceDir} -Xscmx200m"
 # If verbose logs are needed, create a directory /tmp/vlogs and set permissions
 # for everybody. The uncomment the following line and set -v /tmp/vlogs:/tmp/vlogs for Liberty container
 #libertyJvmArgs = libertyJvmArgs + " -Xdump:directory=/tmp/vlogs -Xjit:verbose={compilePerformance},verbose={JITServer},verbose={failures},vlog=/tmp/vlogs/vlog.client.txt "
+# Note: generating verbose logs to stderr interferes with the parsing of the output to detect when the server is ready
 
-# JMeter configuration
+### JMeter configuration ###
 loadTime = 300 # Duration of load
-numClients = 2 # Number of JMeter threads
+numClients = 10 # Number of JMeter threads
 maxUsers = 200 # Maximum number of simulated AcmeAir users
 numUsersPerJMeter = maxUsers//numConcurrentInstances
 ##################################### END CONFIG ######################################
 
+def nanmean(myList):
+    total = 0
+    numValidElems = 0
+    for i in range(len(myList)):
+        if not math.isnan(myList[i]):
+            total += myList[i]
+            numValidElems += 1
+    return total/numValidElems if numValidElems > 0 else math.nan
 
-# Given a list of dictionaries, compute the mean for each key individually
+def nanstd(myList):
+    total = 0
+    numValidElems = 0
+    for i in range(len(myList)):
+        if not math.isnan(myList[i]):
+            total += myList[i]
+            numValidElems += 1
+
+    if numValidElems == 0:
+        return math.nan
+    if numValidElems == 1:
+        return 0
+    else:
+        mean = total/numValidElems
+        total = 0
+        for i in range(len(myList)):
+            if not math.isnan(myList[i]):
+                total += (myList[i] - mean)**2
+        return math.sqrt(total/(numValidElems-1))
+
+def nanmin(myList):
+    min = math.inf
+    for i in range(len(myList)):
+        if not math.isnan(myList[i]) and myList[i] < min:
+            min = myList[i]
+    return min
+
+def nanmax(myList):
+    max = -math.inf
+    for i in range(len(myList)):
+        if not math.isnan(myList[i]) and myList[i] > max:
+            max = myList[i]
+    return max
+
+def tDistributionValue95(degreeOfFreedom):
+    if degreeOfFreedom < 1:
+        return math.nan
+        #import scipy.stats as stats
+        #  stats.t.ppf(0.975, degreesOfFreedom))
+    tValues = [12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228,
+               2.201, 2.179, 2.160, 2.145, 2.131, 2.120, 2.110, 2.101, 2.093, 2.086,
+               2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045, 2.042,]
+    if degreeOfFreedom <= 30:
+        return tValues[degreeOfFreedom-1]
+    else:
+        if degreeOfFreedom <= 60:
+            return 2.042 - 0.001 * (degreeOfFreedom - 30)
+        else:
+            return 1.96
+
+# Confidence intervals tutorial
+# mean +- t * std / sqrt(n)
+# For 95% confidence interval, t = 1.96 if we have many samples
+def meanConfidenceInterval95(myList):
+    n = len(myList)
+    if n <= 1:
+        return math.nan
+    tvalue = tDistributionValue95(n-1)
+    avg, stdDev = nanmean(myList), nanstd(myList)
+    marginOfError = tvalue * stdDev / math.sqrt(n)
+    return 100.0*marginOfError/avg
+
+# Given a list of dictionaries, compute the mean and CI95 for each key individually
 def dict_mean(dict_list):
     mean_dict = {}
+    ci95_dict = {}
     for key in dict_list[0].keys():
         mean_dict[key] = sum(d[key] for d in dict_list) / len(dict_list)
-    return mean_dict
+        ci95_dict[key] = meanConfidenceInterval95(list(d[key] for d in dict_list))
+    return mean_dict, ci95_dict
 
 def getMainPIDFromContainer(host, username, instanceID):
-    # Note: podman needs double curly brackets for format
     remoteCmd = f"{docker} inspect " + "--format='{{.State.Pid}}' " + instanceID
     cmd = f"ssh {username}@{host} \"{remoteCmd}\""
     try:
@@ -120,10 +209,57 @@ def getMainPIDFromContainer(host, username, instanceID):
         return 0
     return 0
 
+# Given a container ID, find all the Java processes running in it
+# If there is only one Java process, return its PID
+def getJavaPIDFromContainer(host, username, instanceID):
+    mainPID = getMainPIDFromContainer(host, username, instanceID)
+    if mainPID == 0:
+        return 0 # Error
+    logging.debug("Main PID from container is {mainPID}".format(mainPID=mainPID))
+    # Find all PIDs running on host
+    remoteCmd = "ps -eo ppid,pid,cmd --no-headers"
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
+    lines = output.splitlines()
+    pattern = re.compile("^\s*(\d+)\s+(\d+)\s+(\S+)")
+    # Construct a dictionary with key=PPID and value a list of PIDs (for its children)
+    ppid2pid = {}
+    pid2cmd = {}
+    for line in lines:
+        m = pattern.match(line)
+        if m:
+            ppid = m.group(1)
+            pid = m.group(2)
+            cmd = m.group(3)
+            if ppid in ppid2pid:
+                ppid2pid[ppid].append(pid)
+            else:
+                ppid2pid[ppid] = [pid]
+            pid2cmd[pid] = cmd
+    # Do a breadth-first search to find all Java processes. Use a queue.
+    javaPIDs = []
+    pidQueue = queue.Queue()
+    pidQueue.put(mainPID)
+    while not pidQueue.empty():
+        pid = pidQueue.get()
+        # If this PID is a Java process, add it to the list
+        if "/java" in pid2cmd[pid]:
+            javaPIDs.append(pid)
+        if pid in ppid2pid: # If my PID has children
+            for childPID in ppid2pid[pid]:
+                pidQueue.put(childPID)
+    if len(javaPIDs) == 0:
+        logging.error("Could not find any Java process in container {instanceID}".format(instanceID=instanceID))
+        return 0
+    if len(javaPIDs) > 1:
+        logging.error("Found more than one Java process in container {instanceID}".format(instanceID=instanceID))
+        return 0
+    return javaPIDs[0]
+
 # Clear the volume of the SCC, if volumes are used
 def clearSCC(host, username, SCCVolumeName):
     logging.info("Clearing SCC")
-    remoteCmd = f"docker volume rm --force {SCCVolumeName}"
+    remoteCmd = f"{docker} volume rm --force {SCCVolumeName}"
     cmd = f"ssh {username}@{host} \"{remoteCmd}\""
     subprocess.run(shlex.split(cmd), universal_newlines=True)
     # TODO: make sure volume does not exist
@@ -302,7 +438,7 @@ def verifyLibertyContainerIDStarted(instanceID, host, username):
     cmd = f"ssh {username}@{host} \"{remoteCmd}\""
     errPattern = re.compile('.+\[ERROR')
     readyPattern = re.compile(".+is ready to run a smarter planet")
-    for iter in range(10):
+    for iter in range(15):
         output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
         liblines = output.splitlines()
         for line in liblines:
@@ -320,8 +456,9 @@ def verifyLibertyContainerIDStarted(instanceID, host, username):
 
 def startLiberty(host, username, instanceName, containerImage, port, cpus, mem, jvmargs, mountOpts, mongoMachine):
     # vlogs can be created in /tmp/vlogs -v /tmp/vlogs:/tmp/vlogs
-    # JITOPTS = "\"verbose={compilePerformance},verbose={JITServer},vlog=/tmp/vlogs/vlog.client.txt\""
-    remoteCmd = f"{docker} run -d --cpus={cpus} -m={mem} {mountOpts} -e JVM_ARGS='{jvmargs}' -e TR_PrintCompStats=1 -e TR_PrintCompTime=1 -e MONGO_HOST={mongoMachine} -e MONGO_PORT=27017 -e MONGO_DBNAME=acmeair -p {port}:9080 --name {instanceName} {containerImage}"
+    JITOPTS = "\"verbose={compilePerformance},verbose={JITServer}\""
+    instantONOpts = f"--cap-add=CHECKPOINT_RESTORE --security-opt seccomp=unconfined" if instantOnRestore else ""
+    remoteCmd = f"{docker} run -d --cpus={cpus} -m={mem} {mountOpts} {instantONOpts} {netOpts} -e JVM_ARGS='{jvmargs}' -e TR_PrintCompStats=1 -e TR_PrintCompTime=1 -e MONGO_HOST={mongoMachine} -e MONGO_PORT=27017 -e MONGO_DBNAME=acmeair -p {port}:9080 --name {instanceName} {containerImage}"
     cmd = f"ssh {username}@{host} \"{remoteCmd}\""
     logging.info("Starting liberty instance {instanceName}: {cmd}".format(instanceName=instanceName,cmd=cmd))
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
@@ -431,16 +568,16 @@ def getCompCPUFromContainer(host, username, instanceID):
     for line in liblines:
         m = compTimePattern.match(line)
         if m:
-            threadTime += int(m.group(1))
-    return threadTime
+            threadTime += float(m.group(1))
+    return threadTime if threadTime > 0 else math.nan
 
 def startJITServer(containerName, JITServerImage, port, JITServerMachine, username):
     # -v /tmp/vlogs:/tmp/JITServer_vlog -e TR_Options=\"statisticsFrequency=10000,vlog=/tmp/vlogs/vlog.txt\"
     #JITOptions = "\"statisticsFrequency=10000,verbose={compilePerformance},verbose={JITServer},vlog=/tmp/vlogs/vlog.txt\""
-    OTHEROPTIONS= "-Xdump:directory=/tmp/vlogs"
+    OTHEROPTIONS= "'-Xdump:directory=/tmp/vlogs'"
     JITOptions = ""
     # -v /tmp/vlogs:/tmp/vlogs
-    remoteCmd = f"{docker} run -d -p {port}:38400 --rm --cpus=8.0 --memory=4G  -e TR_PrintCompMem=1 -e TR_PrintCompStats=1 -e TR_PrintCompTime=1 -e TR_PrintCodeCacheUsage=1 -e JAVA_OPTIONS={OTHEROPTIONS} -e TR_Options={JITOptions} --name {containerName} {JITServerImage} jitserver"
+    remoteCmd = f"{docker} run -d -p {port}:38400 -p 38500:38500 --rm --cpus=8.0 --memory=4G {netOpts} -e TR_PrintCompMem=1 -e TR_PrintCompStats=1 -e TR_PrintCompTime=1 -e TR_PrintCodeCacheUsage=1 -e _JAVA_OPTIONS={OTHEROPTIONS} -e TR_Options={JITOptions} --name {containerName} {JITServerImage} jitserver"
     cmd = f"ssh {username}@{JITServerMachine} \"{remoteCmd}\""
     print(datetime.datetime.now(), " Start JITServer:", cmd)
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
@@ -492,7 +629,7 @@ def getJMeterSummary(containerName, jmeterMachine, username):
         # summary +  17050 in 00:00:06 = 2841.7/s Avg:     0 Min:     0 Max:    49 Err:     0 (0.00%) Active: 2 Started: 2 Finished: 0
         if line.startswith("summary +"):
             # Uncomment this line if we need to print rampup
-            #print(line)
+            print(line)
             m = pattern1.match(line)
             if m:
                 thr = float(m.group(3))
@@ -525,11 +662,11 @@ def getJMeterSummary(containerName, jmeterMachine, username):
             elapsedTime = float(m.group(2))*3600 + float(m.group(3))*60 + float(m.group(4))
             # Fifth group is the throughput value
             throughput = float(m.group(5))
-    # Compute the peak throughput as the average of the last 3 throughput values
+    # Compute the peak throughput as the average of the last 4 throughput values (but not the very last one)
     peakThr = 0.0
-    if len(queue) >= 3:
-        queue = queue[-3:]
-        peakThr = sum(queue)/3.0
+    if len(queue) >= 5:
+        queue = queue[-5:-1]
+        peakThr = sum(queue)/len(queue)
 
     #print (str(elapsedTime), throughput, sep='\t')
     return throughput, elapsedTime, peakThr
@@ -610,7 +747,7 @@ def threadFunction(id, username, numIter, libImage, libertyMachine, port, cpuLim
 
             # Get memory information
             logging.debug("Obtaining footprint information")
-            libPID = getMainPIDFromContainer(host=libertyMachine, username=username, instanceID=containerID)
+            libPID = getJavaPIDFromContainer(host=libertyMachine, username=username, instanceID=containerID)
             if int(libPID) > 0:
                 [rss, peakRss] = getRss(host=libertyMachine, username=username, pid=libPID)
                 pss            = getPss(host=libertyMachine, username=username, pid=libPID)
@@ -632,17 +769,11 @@ def threadFunction(id, username, numIter, libImage, libertyMachine, port, cpuLim
             removeForceContainer(host=libertyMachine, username=username, instanceName=containerID)
 
 
-thrValues = [] # list of throughput values; global so that threads can append to it
+thrValues = [] # list of dictionaries with performance data; global so that threads can append to it
 resultsLock = threading.Lock()
 workers = [] # list of threads
 barrier = threading.Barrier(numConcurrentInstances) # Barrier to make threads work in lockstep
 
-
-
-#level=logging.DEBUG, logging.INFO, logging.WARNING
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s :: %(levelname)s :: (%(threadName)-6s) :: %(message)s',
-                    )
 
 if numConcurrentInstances > len(machines):
     sys.exit("Cannot have more concurrent JVM instances than machine definitions")
@@ -683,15 +814,19 @@ if useJITServer:
 #print(*thrValues, sep = "\n")
 print("Thr\tTime\tPeakThr\tStartup\t CPU\tRSS\tPeakRSS\tPSS")
 for entry in thrValues:
-    print("{thr:4.1f}\t{duration:4.0f}\t{peakThr:4.1f}\t{startup:5d}\t{cpu:5d}\t{rss:6d}\t{peakRss:7d}\t{pss:7d}".format(thr=entry.get('thr'),
+    print("{thr:4.1f}\t{duration:4.0f}\t{peakThr:4.1f}\t{startup:5d}\t{cpu:5.0f}\t{rss:6d}\t{peakRss:7d}\t{pss:7d}".format(thr=entry.get('thr'),
         duration=entry.get('elapsed'), peakThr=entry.get('peakThr'), startup=entry.get('startup'), cpu=entry.get('cpu'), rss=entry.get('rss'),
         peakRss=entry.get('peakrss'), pss=entry.get('pss')))
 # Compute averages
-meanDict = dict_mean(thrValues)
+meanDict, CI95Dict = dict_mean(thrValues)
 print("Averages:")
 print("{thr:4.1f}\t{duration:4.0f}\t{peakThr:4.1f}\t{startup:5.0f}\t{cpu:5.0f}\t{rss:6.0f}\t{peakRss:7.0f}\t{pss:7.0f}".format(thr=meanDict.get('thr'),
         duration=meanDict.get('elapsed'), peakThr=meanDict.get('peakThr'), startup=meanDict.get('startup'), cpu=meanDict.get('cpu'),
         rss=meanDict.get('rss'), peakRss=meanDict.get('peakrss'), pss=meanDict.get('pss')))
+print("CI95    :")
+print("{thr:3.1f}\t{duration:3.1f}\t{peakThr:4.1f}\t{startup:4.1f}\t{cpu:4.1f}\t{rss:5.1f}\t{peakRss:6.1f}\t{pss:6.1f}".format(thr=CI95Dict.get('thr'),
+        duration=CI95Dict.get('elapsed'), peakThr=CI95Dict.get('peakThr'), startup=CI95Dict.get('startup'), cpu=CI95Dict.get('cpu'),
+        rss=CI95Dict.get('rss'), peakRss=CI95Dict.get('peakrss'), pss=CI95Dict.get('pss')))
 
 # Final cleanup
 cleanup(machines, numConcurrentInstances, JITServerMachine if useJITServer else None, username, libertyImage, jmeterImage, mongoImage)
