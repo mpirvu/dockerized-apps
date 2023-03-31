@@ -46,6 +46,7 @@ import threading
 import logging # https://www.machinelearningplus.com/python/python-logging-guide/
 import queue # For FIFO queue
 import math
+import os # For path
 
 # For using a JDK from outside containers we must map    -v MYJDK:/opt/java/openjdk
 # For sharing the SCC among containers we must use volumes    --mount source=VolumeName:DirForSCC
@@ -62,11 +63,11 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s :: %(levelname)s :: 
 #mongoImage     = "mongo-acmeair-ee8:5.0.15"
 
 docker = "podman" # Select between docker and podman
-#libertyImage   = "localhost/liberty-acmeair-ee8:J17-instanton-jitserver"
-#libertyImage   = "localhost/liberty-acmeair-ee8:J17-instanton-256"
+memAnalysis = False # Collect javacores and smaps
+doApplyLoad = True # Set to True to apply load with JMeter. Otherwise, just start-up and then exit
+
+
 libertyImage   = "localhost/liberty-acmeair-ee8:J17-podman"
-#libertyImage    ="localhost/liberty-acmeair-ee8:J17-podman-noappscc"
-#libertyImage    ="localhost/liberty-acmeair-ee8:J17-podman-noconfigure"
 JITServerImage = "icr.io/appcafe/open-liberty:beta-instanton"
 jmeterImage    = "localhost/jmeter-acmeair:5.3"
 mongoImage     = "localhost/mongo-acmeair-ee8:5.0.15"
@@ -94,6 +95,7 @@ staggerDelay = 1           # Delay between starting each concurrent Liberty inst
 
 ### Liberty/AcmeAir configuration ###
 instantOnRestore = False # If true, Liberty will restore from a CRIU dump (instantON feature)
+postRestoreOpts = "-XX:-UseJITServer" if instantOnRestore else ""
 basePort = 9080 # for AcmeAir
 cpuLimit="1"
 memoryLimit="512m"
@@ -103,7 +105,8 @@ useSCCVolume    = False  # set to true to have a SCC mounted in a volume (instea
 SCCVolumeName   = "scc_volume" # Name of the volume to use for the SCC
 sccInstanceDir  = "/opt/java/.scc" # Location of the shared class cache in the instance
 mountOpts       = f"--mount type=volume,src={SCCVolumeName},target={sccInstanceDir}" if useSCCVolume  else ""
-libertyJvmArgs  = f"-Xshareclasses:none"
+libertyJvmArgs  = f""
+
 #libertyJvmArgs = f"-XX:+UseJITServer -XX:JITServerAddress={JITServerMachine} -Xshareclasses:name=liberty,cacheDir=/output/.classCache/"
 #libertyJvmArgs = f"-Xshareclasses:name=myscc,cacheDir={sccInstanceDir} -Xscmx200m"
 # If verbose logs are needed, create a directory /tmp/vlogs and set permissions
@@ -263,6 +266,46 @@ def clearSCC(host, username, SCCVolumeName):
     cmd = f"ssh {username}@{host} \"{remoteCmd}\""
     subprocess.run(shlex.split(cmd), universal_newlines=True)
     # TODO: make sure volume does not exist
+
+def collectJavacore(host, username, javaPID, instanceID):
+    # Produce javacore file
+    remoteCmd = f"kill -3 {javaPID}" # Send SIGQUIT to the Java process
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    logging.debug("Generating javacore by sending SIGQUIT with {cmd}".format(cmd=cmd))
+    subprocess.run(shlex.split(cmd), universal_newlines=True)
+
+    # Get javacore file
+    remoteCmd = f"{docker} exec {instanceID} bash -c 'ls -t /output/javacore.* | head -1'"
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    logging.debug("Obtaining javacore name with {cmd}".format(cmd=cmd))
+    try:
+        output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
+        lines = output.splitlines()
+        javacoreFile = lines[0]
+        destination = "/tmp/" + os.path.split(javacoreFile)[1] + f".{javaPID}" # Append the PID to the file name
+        remoteCmd = f"{docker} cp {instanceID}:{javacoreFile} {destination}"
+        cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+        logging.debug("Copying javacore with {cmd}".format(cmd=cmd))
+        subprocess.run(shlex.split(cmd), universal_newlines=True)
+    except:
+        logging.error("Cannot get javacore file for container {instanceID}".format(instanceID=instanceID))
+
+def collectSmaps(host, username, javaPID):
+    # Get smaps file
+    remoteCmd = f"cp /proc/{javaPID}/smaps /tmp/smaps.{javaPID}"
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    try:
+        subprocess.run(shlex.split(cmd), universal_newlines=True)
+    except:
+        logging.error("Cannot get smaps file for javaPID {javaPID}".format(javaPID=javaPID))
+
+def collectJavacoreAndSmaps(host, username, instanceID, javaPID=None):
+    if not javaPID:
+        javaPID = getJavaPIDFromContainer(host, username, instanceID)
+    if javaPID == 0:
+        return
+    collectJavacore(host, username, javaPID, instanceID)
+    collectSmaps(host, username, javaPID)
 
 # Given a PID, return RSS and peakRSS for the process
 def getRss(host, username, pid):
@@ -456,8 +499,8 @@ def verifyLibertyContainerIDStarted(instanceID, host, username):
 
 def startLiberty(host, username, instanceName, containerImage, port, cpus, mem, jvmargs, mountOpts, mongoMachine):
     # vlogs can be created in /tmp/vlogs -v /tmp/vlogs:/tmp/vlogs
-    JITOPTS = "\"verbose={compilePerformance},verbose={JITServer}\""
-    instantONOpts = f"--cap-add=CHECKPOINT_RESTORE --security-opt seccomp=unconfined" if instantOnRestore else ""
+    #JITOPTS = "\"verbose={compilePerformance},verbose={JITServer}\""
+    instantONOpts = f"-e OPENJ9_RESTORE_JAVA_OPTIONS='{postRestoreOpts}' --cap-add=CHECKPOINT_RESTORE --security-opt seccomp=unconfined" if instantOnRestore else ""
     remoteCmd = f"{docker} run -d --cpus={cpus} -m={mem} {mountOpts} {instantONOpts} {netOpts} -e JVM_ARGS='{jvmargs}' -e TR_PrintCompStats=1 -e TR_PrintCompTime=1 -e MONGO_HOST={mongoMachine} -e MONGO_PORT=27017 -e MONGO_DBNAME=acmeair -p {port}:9080 --name {instanceName} {containerImage}"
     cmd = f"ssh {username}@{host} \"{remoteCmd}\""
     logging.info("Starting liberty instance {instanceName}: {cmd}".format(instanceName=instanceName,cmd=cmd))
@@ -629,7 +672,7 @@ def getJMeterSummary(containerName, jmeterMachine, username):
         # summary +  17050 in 00:00:06 = 2841.7/s Avg:     0 Min:     0 Max:    49 Err:     0 (0.00%) Active: 2 Started: 2 Finished: 0
         if line.startswith("summary +"):
             # Uncomment this line if we need to print rampup
-            print(line)
+            #print(line)
             m = pattern1.match(line)
             if m:
                 thr = float(m.group(3))
@@ -716,6 +759,8 @@ def threadFunction(id, username, numIter, libImage, libertyMachine, port, cpuLim
         containerID = startLiberty(host=libertyMachine, username=username, instanceName=libertyInstanceName, containerImage=libImage,
                                    port=port, cpus=cpuLimit, mem=memoryLimit, jvmargs=jvmArgs, mountOpts=mountOpts, mongoMachine=mongoMachine)
         time.sleep(delayToStart)
+        thr, elapsed, peakThr = math.nan, math.nan, math.nan
+
         # Verify Liberty is started
         started = verifyLibertyContainerIDStarted(instanceID=containerID, host=libertyMachine, username=username)
         if started:
@@ -724,22 +769,22 @@ def threadFunction(id, username, numIter, libImage, libertyMachine, port, cpuLim
             #cmd = f"curl --ipv4 http://{libertyMachine}:{port}/rest/info/loader/load?numCustomers=10000"
             #output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
 
-            # Apply load
-            applyLoad(containerName=jmeterInstanceName, jmeterImage=jmeterImage, jmeterMachine=jmeterMachine, username=username,
-                      libertyMachine=libertyMachine, port=port, numClients=numClients, duration=loadTime, firstUser=firstUser, lastUser=lastUser)
+            if doApplyLoad:
+                applyLoad(containerName=jmeterInstanceName, jmeterImage=jmeterImage, jmeterMachine=jmeterMachine, username=username,
+                          libertyMachine=libertyMachine, port=port, numClients=numClients, duration=loadTime, firstUser=firstUser, lastUser=lastUser)
 
-            # Wait for load to finish
-            remoteCmd = f"{docker} wait {jmeterInstanceName}"
-            cmd = f"ssh {username}@{jmeterMachine} \"{remoteCmd}\""
-            logging.info("Wait for {jmeter} to end: {cmd}".format(jmeter=jmeterInstanceName, cmd=cmd))
-            output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
+                # Wait for load to finish
+                remoteCmd = f"{docker} wait {jmeterInstanceName}"
+                cmd = f"ssh {username}@{jmeterMachine} \"{remoteCmd}\""
+                logging.info("Wait for {jmeter} to end: {cmd}".format(jmeter=jmeterInstanceName, cmd=cmd))
+                subprocess.run(shlex.split(cmd), universal_newlines=True)
 
-            # Read throughput
-            thr, elapsed, peakThr = getJMeterSummary(containerName=jmeterInstanceName, jmeterMachine=jmeterMachine, username=username)
+                # Read throughput
+                thr, elapsed, peakThr = getJMeterSummary(containerName=jmeterInstanceName, jmeterMachine=jmeterMachine, username=username)
 
-            # Stop JMeter
-            stopJMeter(containerName=jmeterInstanceName, jmeterMachine=jmeterMachine, username=username)
-            logging.info("Throughput: {thr} {elapsed} {peakThr}".format(thr=thr,elapsed=elapsed,peakThr=peakThr))
+                # Stop JMeter
+                stopJMeter(containerName=jmeterInstanceName, jmeterMachine=jmeterMachine, username=username)
+                logging.info("Throughput: {thr} {elapsed} {peakThr}".format(thr=thr,elapsed=elapsed,peakThr=peakThr))
 
             # Wait for all threads to finish if we want to work in lockstep
             if lockStep and (numConcurrentInstances > 1):
@@ -752,6 +797,8 @@ def threadFunction(id, username, numIter, libImage, libertyMachine, port, cpuLim
                 [rss, peakRss] = getRss(host=libertyMachine, username=username, pid=libPID)
                 pss            = getPss(host=libertyMachine, username=username, pid=libPID)
                 logging.info("Memory: RSS={rss} PeakRSS={peak} PSS={pss}".format(rss=rss,peak=peakRss,pss=pss))
+                if memAnalysis:
+                    collectJavacoreAndSmaps(host=libertyMachine, username=username, instanceID=containerID, javaPID=libPID)
             startTimeMillis = getLibertyStartupTime(host=libertyMachine, username=username, containerID=containerID, containerStartTimeMs=containerStartTimeMs)
             logging.info("Startup time: {startup}".format(startup=startTimeMillis))
 
