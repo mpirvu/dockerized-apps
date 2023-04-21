@@ -279,7 +279,7 @@ def getCompCPUFromContainer(host, username, instanceID):
         return math.nan
 
     threadTime = 0.0
-    remoteCmd = f"{docker} logs --tail=25 {instanceID}"
+    remoteCmd = f"{docker} logs --tail=50 {instanceID}"
     cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True, stderr=subprocess.STDOUT) # I need to capture stderr as well
     liblines = output.splitlines()
@@ -368,7 +368,7 @@ def removeAppServerByID(host, username, containerID):
 
 
 def startAppServerContainer(host, username, instanceName, image, port, httpsport, cpus, mem, jvmArgs):
-    remoteCmd = f"{docker} run -d --cpuset-cpus={cpus} -m={mem} {mountOpts} {extraDockerOpts} {netOpts} -e TR_Options='{TR_Options}' -e _JAVA_OPTIONS='{jvmArgs}' -e TR_PrintCompStats=1 -e TR_PrintCompTime=1  -p {port}:{port} -p {httpsport}:{httpsport} --name {instanceName} {image}"
+    remoteCmd = f"{docker} run -d --cpuset-cpus={cpus} -m={mem} {mountOpts} {extraDockerOpts} {netOpts} -e TR_Options='{TR_Options}' -e _JAVA_OPTIONS='{jvmArgs}' -e TR_PrintCompTime=1  -p {port}:{port} -p {httpsport}:{httpsport} --name {instanceName} {image}"
     dockerRunCmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     logging.info("Starting AppServer instance {instanceName} with cmd: {cmd}".format(instanceName=instanceName,cmd=dockerRunCmd))
     output = subprocess.check_output(shlex.split(dockerRunCmd), universal_newlines=True)
@@ -549,14 +549,13 @@ def runBenchmarkOnce(image, javaOpts):
     if not checkAppServerForErrors(instanceID, appServerHost, username):
         thrResults = [math.nan for i in range(maxPulses)] #np.full((maxPulses), fill_value=np.nan, dtype=np.float) # Reset any throughput values
 
-    # read CompCPU
-    cpu = getCompCPUFromContainer(appServerHost, username, instanceID)
-
     # stop container
-    rc = stopAppServerByID(appServerHost, username, instanceID)
-    if rc:
-        rc = removeAppServerByID(appServerHost, username, instanceID)
-        if not rc:
+    success = stopAppServerByID(appServerHost, username, instanceID)
+    if success:
+        # read CompCPU
+        cpu = getCompCPUFromContainer(appServerHost, username, instanceID)
+        success = removeAppServerByID(appServerHost, username, instanceID)
+        if not success:
             logging.error("Cannot remove container {id}".format(id=instanceID))
             sys.exit(-1)
     else:
@@ -593,7 +592,7 @@ def runBenchmarkIteratively(numIter, image, javaOpts):
         for pulse in range(numPulses):
             print("\t{thr:7.1f}".format(thr=thrResults[iter][pulse]), end="")
         thrAvgResults[iter] = meanLastValues(thrResults[iter], numMeasurementTrials) #np.nanmean(thrResults[iter][-numMeasurementTrials:])
-        print("\tAvg={thr:7.1f}  RSS={rss:7d} MB  CompCPU={cpu:7.1f} sec".format(thr=thrAvgResults[iter], rss=rssResults[iter], cpu=cpuResults[iter]))
+        print("\tAvg={thr:7.1f}  RSS={rss:7d} MB  CompCPU={cpu:5.1f} sec".format(thr=thrAvgResults[iter], rss=rssResults[iter], cpu=cpuResults[iter]))
 
     verticalAverages = []  #verticalAverages = np.nanmean(thrResults, axis=0)
     for pulse in range(numPulses):
@@ -608,7 +607,7 @@ def runBenchmarkIteratively(numIter, image, javaOpts):
     print("Avg:", end="")
     for pulse in range(numPulses):
         print("\t{thr:7.1f}".format(thr=verticalAverages[pulse]), end="")
-    print("\tAvg={avgThr:7.1f}  RSS={rss:7.0f} MB  CompCPU={cpu:7.1f}".format(avgThr=nanmean(thrAvgResults), rss=nanmean(rssResults), cpu=nanmean(cpuResults)))
+    print("\tAvg={avgThr:7.1f}  RSS={rss:7.0f} MB  CompCPU={cpu:5.1f}".format(avgThr=nanmean(thrAvgResults), rss=nanmean(rssResults), cpu=nanmean(cpuResults)))
     # Throughput stats
     avg, stdDev, min, max, ci95 = computeStats(thrAvgResults)
     print("Throughput stats: Avg={avg:7.1f}  StdDev={stdDev:7.1f}  Min={min:7.1f}  Max={max:7.1f}  Max/Min={maxmin:7.1f} CI95={ci95:7.1f}%".
