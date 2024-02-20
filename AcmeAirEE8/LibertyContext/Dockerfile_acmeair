@@ -1,7 +1,8 @@
 # Dockerfile used for creating a container capable to run AcmeAir monolithic
 # Must be running on the same network as the mongodb container
 #FROM icr.io/appcafe/open-liberty:beta-instanton
-FROM open-liberty:kernel-slim-java17-openj9
+#FROM open-liberty:kernel-slim-java17-openj9
+FROM localhost/liberty-slim:J17-20240202
 
 COPY --chown=1001:0 LibertyFiles/server.xml /config/server.xml
 COPY --chown=1001:0 LibertyFiles/acmeair-java-2.0.0-SNAPSHOT.war /config/apps/
@@ -9,6 +10,7 @@ EXPOSE 9080
 RUN features.sh
 
 #ENV OPENJ9_SCC=false
+ENV WARM_ENDPOINT=true
 ENV VERBOSE=true
 RUN configure.sh
 
