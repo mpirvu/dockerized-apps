@@ -6,25 +6,26 @@
 # associated command line arguments or environment variables.
 # If command line arguments indicates that the JVM is running in client mode,
 # a JITServer will be launched automatically
-import shlex, subprocess
-import time # for sleep
-import re # for regular expressions
-import sys # for exit
-import logging # https://www.machinelearningplus.com/python/python-logging-guide/
-import queue
 from collections import deque
+import datetime # for datetime.datetime.now()
+import logging # https://www.machinelearningplus.com/python/python-logging-guide/
 import math
+import queue
+import re # for regular expressions
+import shlex, subprocess
+import sys # for exit
+import time # for sleep
 
 ############################### CONFIG ###############################################
 #level=logging.DEBUG, logging.INFO, logging.WARNING
-logging.basicConfig(level=logging.WARNING, format='%(asctime)s :: %(levelname)s :: (%(threadName)-6s) :: %(message)s',)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s :: %(levelname)s :: (%(threadName)-6s) :: %(message)s',)
 
-docker = "docker" # Select between docker and podman
+docker = "podman" # Select between docker and podman
 netOpts = "--network=slirp4netns" if docker == "podman" else "" # for podman we need to use slirp4netns if running as root. This will be added to Liberty. mongo uses host network. Does JITServer needed it?
 
 ################### Benchmark configuration #################
 doColdRun = True
-appServerMachine = "9.42.142.177"
+appServerMachine = "9.46.116.36"
 username = "" # for connecting remotely to the SUT; leave empty to connect without ssh
 containerName = "acmeair"
 appServerPort   = "9080"
@@ -33,6 +34,9 @@ memLimit        = "-m=512m"
 delayToStart    = 15 # seconds; waiting for the AppServer to start before checking for valid startup
 extraDockerOpts = "" # extra options to pass to docker run
 instantOnRestore= False # Set to true to add --cap-add=CHECKPOINT_RESTORE to docker run command
+doApplyLoad     = True # Set to false to skip load generation
+getFirstResponseTime = False # Set to true to get the first response time
+firstResponseHelperScript = "./loop_curl.sh" # Script to get the first response time
 
 ############### SCC configuration #####################
 useSCCVolume    = False  # set to true to have a SCC mounted in a volume (instead of the embedded SCC)
@@ -41,13 +45,14 @@ sccInstanceDir  = "/opt/java/.scc" # Location of the shared class cache in the i
 mountOpts       = f"--mount type=volume,src={SCCVolumeName},target={sccInstanceDir}" if useSCCVolume  else ""
 
 ############### Database configuration #########
-mongoMachine       = "9.42.142.177"
+mongoMachine       = "9.46.116.36"
 mongoUsername      = "" # To connect to mongoMachine remotely; leave empty to connect without ssh
 mongoImage         = "mongo-acmeair-ee8:5.0.15"
 mongoAffinity      = ""
+mongoInstanceName  = "mongodb1"
 
 ############### JMeter CONFIG ###############
-jmeterMachine       = "9.42.142.177"
+jmeterMachine       = "9.46.116.36"
 jmeterUsername      = "" # To connect to JMeter machine; leave empty to connect without ssh
 jmeterImage         = "jmeter-acmeair:5.3"
 jmeterContainerName = "jmeter"
@@ -56,7 +61,7 @@ printRampup         = True # If True, print all JMeter throughput values to plot
 
 ################ Load CONFIG ###############
 numRepetitionsOneClient = 1
-numRepetitions50Clients = 3
+numRepetitions50Clients = 0
 durationOfOneClient     = 60 # seconds
 durationOfOneRepetition = 180 # seconds
 numClients              = 10 # Number of JMeter threads
@@ -67,18 +72,28 @@ maxUsers                = 199 # Maximum number of simulated AcmeAir users
 
 ################# JITServer CONFIG ###############
 # JITServer is automatically launched if the JVM option include -XX:+UseJITServer
-JITServerMachine = "9.42.142.177" # if applicable
+JITServerMachine = "9.46.116.36" # if applicable
 JITServerUsername = "" # To connect to JITServerMachine; leave empty for connecting without ssh
-JITServerImage   = "liberty-acmeair-ee8:J17"
+JITServerImage   = "localhost/liberty-acmeair-ee8:J17-20240202"
 JITServerContainerName = "jitserver"
 
 
 # List of configs to run
 # Each entry is a dictionary with "image" and "args" as keys
 configs = [
-    {"image":"liberty-acmeair-ee8:J17", "args":""},
+    #{"image":"localhost/liberty-acmeair-ee8:J17-20240202", "args":""},
+    #{"image":"localhost/liberty-acmeair-ee8:23.0.0.6-J17", "args":""},
+    #{"image":"localhost/liberty-acmeair-ee8:J17-20240202-instanon", "args":""},
+    {"image":"localhost/liberty-acmeair-ee8:23.0.0.6-J17-instanton", "args":""},
 #    {"image":"", "args":""},
 ]
+
+def nancount(myList):
+    count = 0
+    for i in range(len(myList)):
+        if not math.isnan(myList[i]):
+            count += 1
+    return count
 
 def nanmean(myList):
     total = 0
@@ -143,12 +158,12 @@ def tDistributionValue95(degreeOfFreedom):
 # mean +- t * std / sqrt(n)
 # For 95% confidence interval, t = 1.96 if we have many samples
 def meanConfidenceInterval95(myList):
-    n = len(myList)
-    if n <= 1:
+    cnt = nancount(myList)
+    if cnt <= 1:
         return math.nan
-    tvalue = tDistributionValue95(n-1)
+    tvalue = tDistributionValue95(cnt-1)
     avg, stdDev = nanmean(myList), nanstd(myList)
-    marginOfError = tvalue * stdDev / math.sqrt(n)
+    marginOfError = tvalue * stdDev / math.sqrt(cnt)
     return 100.0*marginOfError/avg
 
 def computeStats(myList):
@@ -157,7 +172,13 @@ def computeStats(myList):
     min = nanmin(myList)
     max = nanmax(myList)
     ci95 = meanConfidenceInterval95(myList)
-    return avg, stdDev, min, max, ci95
+    samples = nancount(myList)
+    return avg, stdDev, min, max, ci95, samples
+
+def printStats(myList, name):
+    avg, stdDev, min, max, ci95, samples = computeStats(myList)
+    print("{name:<17} Avg={avg:7.1f}  StdDev={stdDev:7.1f}  Min={min:7.1f}  Max={max:7.1f}  Max/Min={maxmin:7.1f} CI95={ci95:7.1f}%  samples={n}".
+            format(name=name, avg=avg, stdDev=stdDev, min=min, max=max, maxmin=max/min, ci95=ci95, n=samples))
 
 def meanLastValues(myList, numLastValues):
     assert numLastValues > 0
@@ -175,6 +196,53 @@ def getMainPIDFromContainer(host, username, instanceID):
     except:
         return 0
     return 0
+
+# Given a container ID, find all the Java processes running in it
+# If there is only one Java process, return its PID
+def getJavaPIDFromContainer(host, username, instanceID):
+    mainPID = getMainPIDFromContainer(host, username, instanceID)
+    if mainPID == 0:
+        return 0 # Error
+    logging.debug("Main PID from container is {mainPID}".format(mainPID=mainPID))
+    # Find all PIDs running on host
+    remoteCmd = "ps -eo ppid,pid,cmd --no-headers"
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
+    lines = output.splitlines()
+    pattern = re.compile("^\s*(\d+)\s+(\d+)\s+(\S+)")
+    # Construct a dictionary with key=PPID and value a list of PIDs (for its children)
+    ppid2pid = {}
+    pid2cmd = {}
+    for line in lines:
+        m = pattern.match(line)
+        if m:
+            ppid = m.group(1)
+            pid = m.group(2)
+            cmd = m.group(3)
+            if ppid in ppid2pid:
+                ppid2pid[ppid].append(pid)
+            else:
+                ppid2pid[ppid] = [pid]
+            pid2cmd[pid] = cmd
+    # Do a breadth-first search to find all Java processes. Use a queue.
+    javaPIDs = []
+    pidQueue = queue.Queue()
+    pidQueue.put(mainPID)
+    while not pidQueue.empty():
+        pid = pidQueue.get()
+        # If this PID is a Java process, add it to the list
+        if "/java" in pid2cmd[pid]:
+            javaPIDs.append(pid)
+        if pid in ppid2pid: # If my PID has children
+            for childPID in ppid2pid[pid]:
+                pidQueue.put(childPID)
+    if len(javaPIDs) == 0:
+        logging.error("Could not find any Java process in container {instanceID}".format(instanceID=instanceID))
+        return 0
+    if len(javaPIDs) > 1:
+        logging.error("Found more than one Java process in container {instanceID}".format(instanceID=instanceID))
+        return 0
+    return javaPIDs[0]
 
 # Given a container ID, find all the Java processes running in it
 # If there is only one Java process, return its PID
@@ -272,7 +340,7 @@ def removeContainersFromImage(host, username, imageName):
 
 # Restore database from backup
 def restoreDatabase(host, username, mongoImage):
-    remoteCmd = f"{docker} exec mongodb mongorestore --drop /AcmeAirDBBackup"
+    remoteCmd = f"{docker} exec {mongoInstanceName} mongorestore --drop /AcmeAirDBBackup"
     cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     logging.debug(f"Restoring database: {cmd}")
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True, stderr=subprocess.STDOUT)
@@ -280,7 +348,7 @@ def restoreDatabase(host, username, mongoImage):
 
 # start mongo on a remote machine
 def startMongo(host, username, mongoImage):
-    remoteCmd = f"{docker} run --rm -d --net=host --name mongodb {mongoImage} --nojournal"
+    remoteCmd = f"{docker} run --rm -d --net=host --name {mongoInstanceName} {mongoImage} --nojournal"
     cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     logging.info("Starting mongo: {cmd}".format(cmd=cmd))
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
@@ -297,21 +365,21 @@ def getRss(host, username, pid):
         #lines = s.splitlines()
     except IOError as ioe:
         logging.warning("Cannot open {filename}: {msg}".format(filename=filename,msg=str(ioe)))
-        return [0, 0]  # wrong pid?
+        return [math.nan, math.nan]  # wrong pid?
     i =  s.index("VmRSS:") # Find the position of the substring
     # Take everything from this position till the very end
     # Then split the string 3 times, taking first 3 "words" and putting them into a list
     tokens = s[i:].split(None, 3)
     if len(tokens) < 3:
-        return [0, 0]  # invalid format
-    rss = int(tokens[1]) * _scale[tokens[2]] // 1048576 # convert value to bytes and then to MB
+        return [math.nan, math.nan]  # invalid format
+    rss = float(tokens[1]) * _scale[tokens[2]] / 1048576.0 # convert value to bytes and then to MB
 
     # repeat for peak RSS
     i =  s.index("VmHWM:")
     tokens = s[i:].split(None, 3)
     if len(tokens) < 3:
-        return [0, 0]  # invalid format
-    peakRss = int(tokens[1]) * _scale[tokens[2]] // 1048576 # convert value to bytes and then to MB
+        return [math.nan, math.nan]  # invalid format
+    peakRss = float(tokens[1]) * _scale[tokens[2]] / 1048576.0 # convert value to bytes and then to MB
     return [rss, peakRss]
 
 def clearSCC(host, username):
@@ -415,6 +483,94 @@ def getCompCPUFromContainer(host, username, instanceID):
         if m:
             threadTime += float(m.group(1))
     return threadTime if threadTime > 0 else math.nan
+
+def getAppServerStartupTime(host, username, containerID, containerStartTimeMs, curlProcess):
+    logging.debug("Computing startup time for Liberty instance {instanceID}".format(instanceID=containerID))
+    startupTime = math.nan
+    firstResponseTime = math.nan
+    # Check that the indicated container still exists
+    remoteCmd = f"{docker} ps -a --quiet --filter id={containerID}"
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
+    output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
+    lines = output.splitlines()
+    if not lines:
+        logging.warning("Liberty instance {instanceID} does not exist.".format(instanceID=containerID))
+        return startupTime, firstResponseTime
+    # Copy the log file from the container to the host
+    # Weird thing that I cannot use /tmp to store the log file
+    logFileOnHost = f"messages.log.{containerID}"
+    localLogFile = logFileOnHost + ".local"
+    if username:
+        remoteCmd = f"{docker} cp {containerID}:/logs/messages.log {logFileOnHost}"
+        cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+        output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
+        # Copy the log file from the remote host to the local machine
+        cmd = f"scp {username}@{host}:{logFileOnHost} {localLogFile}"
+        output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
+    else: # Running locally
+        remoteCmd = f"{docker} cp {containerID}:/logs/messages.log {localLogFile}"
+        output = subprocess.check_output(shlex.split(remoteCmd), universal_newlines=True)
+    try:
+        f = open(localLogFile, 'r')
+        s = f.read() # read the entire file
+        f.close()
+    except IOError as ioe:
+        logging.warning("Cannot open {filename}: {msg}".format(filename=localLogFile,msg=str(ioe)))
+        return startupTime, firstResponseTime
+    # must remove the logFile
+    if username:
+        cmd = f"ssh {username}@{host} rm {logFileOnHost}"
+        output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
+    cmd = f"rm {localLogFile}"
+    output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
+    # [10/29/20, 23:18:49:468 UTC] 00000024 com.ibm.ws.kernel.feature.internal.FeatureManager            A CWWKF0011I: The defaultServer server is ready to run a smarter planet. The defaultServer server started in 2.885 seconds.
+    lines = s.splitlines()
+    readyPattern = re.compile('\[(.+)\] .+is ready to run a smarter planet')
+    for line in lines:
+        m = readyPattern.match(line)
+        if m:
+            timestamp = m.group(1)
+            # [10/29/20, 17:53:03:894 EDT]
+            pattern1 = re.compile("(\d+)\/(\d+)\/(\d+),? (\d+):(\d+):(\d+):(\d+) (.+)")
+            m1 = pattern1.match(timestamp)
+            if m1:
+                # Ignore the hour to avoid time zone issues
+                endTime = (int(m1.group(5)) * 60 + int(m1.group(6)))*1000 + int(m1.group(7))
+                if endTime < containerStartTimeMs:
+                    endTime = endTime + 3600*1000 # add one hour
+                startupTime = float(endTime - containerStartTimeMs)
+                break
+            else:
+                logging.warning("Liberty timestamp is in the wrong format: {timestamp}".format(timestamp=timestamp))
+                break
+    if startupTime == math.nan:
+        logging.warning("Liberty instance {containerID} did not start correctly".format(containerID=containerID))
+
+    if curlProcess: # We intend to get the firstResponse time
+        outs = None
+        errs = None
+        try:
+            outs, errs = curlProcess.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            curlProcess.kill()
+            outs, errs = curlProcess.communicate()
+
+        if curlProcess.returncode == 0:
+            firstResponseTimeString = outs #curlProcess.stdout
+            # my output coming from `date +"%H:%M:%S:%N"` is in the format HH:MM:SS:NNNNNNNNN
+            logging.debug(f"Computing first response time. End time is {firstResponseTimeString}")
+            tpattern = re.compile("(\d+):(\d+):(\d+):(\d\d\d)")
+            m2 = tpattern.match(firstResponseTimeString)
+            if m2:
+                # Ignore the hour to avoid time zone issues
+                endTimeMs = (int(m2.group(2))*60 + int(m2.group(3)))*1000 + int(m2.group(4))
+                if endTimeMs < containerStartTimeMs:
+                    endTimeMs = endTimeMs + 3600*1000 # add one hour
+                firstResponseTime = endTimeMs - containerStartTimeMs
+            else:
+                logging.warning("First response time is in the wrong format: {firstResponseTimeString}".format(firstResponseTimeString=firstResponseTimeString))
+
+    return startupTime, firstResponseTime
 
 def startJITServer():
     # -v /tmp/vlogs:/tmp/JITServer_vlog -e TR_Options=\"statisticsFrequency=10000,vlog=/tmp/vlogs/vlog.txt\"
@@ -550,8 +706,19 @@ def runBenchmarkOnce(image, javaOpts):
     maxPulses = numRepetitionsOneClient + numRepetitions50Clients
     thrResults = [math.nan for i in range(maxPulses)] # np.full((maxPulses), fill_value=np.nan, dtype=np.float)
     rss, peakRss, cpu = math.nan, math.nan, math.nan
+    peakThroughput = 0
+    curlProcess = None
 
     restoreDatabase(mongoMachine, mongoUsername, mongoImage)
+
+    # Start an external program called curl_loop in background
+    # This program will keep sending requests to the app server until it responds with 200 once
+    if getFirstResponseTime:
+        curlCmd = f"{firstResponseHelperScript}"
+        curlProcess = subprocess.Popen(shlex.split(curlCmd), universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    crtTime = datetime.datetime.now()
+    containerStartTimeMs = (crtTime.minute * 60 + crtTime.second)*1000 + crtTime.microsecond//1000
 
     instanceID = startAppServerContainer(host=appServerMachine, username=username, instanceName=containerName, image=image, port=appServerPort, cpus=cpuLimit, mem=memLimit, jvmArgs=javaOpts, mountOpts=mountOpts, mongoMachine=mongoMachine)
     if instanceID is None:
@@ -559,20 +726,20 @@ def runBenchmarkOnce(image, javaOpts):
 
     # We know the app started successfuly
 
-    peakThroughput = 0
-    for pulse in range(maxPulses):
-        if pulse >= numRepetitionsOneClient:
-            cli = numClients
-            duration = durationOfOneRepetition
-        else:
-            cli = 1
-            duration = durationOfOneClient
-        thrResults[pulse], elapsed, peakThr, errors = runPhase(duration, cli)
-        if errors == 0:
-            peakThroughput = max(peakThroughput, peakThr)
+    if doApplyLoad:
+        for pulse in range(maxPulses):
+            if pulse >= numRepetitionsOneClient:
+                cli = numClients
+                duration = durationOfOneRepetition
+            else:
+                cli = 1
+                duration = durationOfOneClient
+            thrResults[pulse], elapsed, peakThr, errors = runPhase(duration, cli)
+            if errors == 0:
+                peakThroughput = max(peakThroughput, peakThr)
 
     # Collect RSS at end of run
-    serverPID = getMainPIDFromContainer(host=appServerMachine, username=username, instanceID=instanceID)
+    serverPID = getJavaPIDFromContainer(host=appServerMachine, username=username, instanceID=instanceID)
 
     if int(serverPID) > 0:
         rss, peakRss = getRss(host=appServerMachine, username=username, pid=serverPID)
@@ -582,16 +749,18 @@ def runBenchmarkOnce(image, javaOpts):
     time.sleep(2)
 
     # If there were errors during the run, invalidate throughput results
-    if not checkAppServerForErrors(instanceID, appServerMachine, username):
-        thrResults = [math.nan for i in range(maxPulses)] #np.full((maxPulses), fill_value=np.nan, dtype=np.float) # Reset any throughput values
+    if doApplyLoad:
+        if not checkAppServerForErrors(instanceID, appServerMachine, username):
+            thrResults = [math.nan for i in range(maxPulses)] #np.full((maxPulses), fill_value=np.nan, dtype=np.float) # Reset any throughput values
 
     # stop container and read CompCPU
     rc = stopAppServerByID(appServerMachine, username, instanceID)
     cpu = getCompCPUFromContainer(appServerMachine, username, instanceID)
+    startTimeMillis, firstResponseTime = getAppServerStartupTime(appServerMachine, username, instanceID, containerStartTimeMs, curlProcess)
     removeForceContainer(host=appServerMachine, username=username, instanceName=containerName)
 
     # return throughput as an array of throughput values for each burst and also the RSS
-    return thrResults, peakThroughput, float(rss), float(peakRss), float(cpu/1000.0)
+    return thrResults, peakThroughput, rss, peakRss, float(cpu/1000.0), startTimeMillis, firstResponseTime
 
 ####################### runBenchmarksIteratively ##############################
 def runBenchmarkIteratively(numIter, image, javaOpts):
@@ -601,6 +770,8 @@ def runBenchmarkIteratively(numIter, image, javaOpts):
     rssResults = [] # Just a list
     peakRssResults = []
     cpuResults = []
+    startupResults = []
+    firstResponseResults = []
 
     # clear SCC if needed (by destroying the SCC volume)
     if doColdRun:
@@ -612,7 +783,7 @@ def runBenchmarkIteratively(numIter, image, javaOpts):
         time.sleep(1) # Give JITServer some time to start
 
     for iter in range(numIter):
-        thrList, peakThroughput, rss, peakRss, cpu = runBenchmarkOnce(image, javaOpts)
+        thrList, peakThroughput, rss, peakRss, cpu, startupTime, firstResponseTime = runBenchmarkOnce(image, javaOpts)
         lastThr = meanLastValues(thrList, numMeasurementTrials) # average for last N pulses
         print("Run {iter}: Thr={lastThr:6.1f} RSS={rss:6.0f} MB  PeakRSS={peakRss:6.0f} MB  CPU={cpu:6.1f} sec  PeakThroughput={pt:6.1f}".
               format(iter=iter, lastThr=lastThr, rss=rss, peakRss=peakRss, cpu=cpu, pt=peakThroughput))
@@ -620,6 +791,8 @@ def runBenchmarkIteratively(numIter, image, javaOpts):
         rssResults.append(rss)
         peakRssResults.append(peakRss)
         cpuResults.append(cpu)
+        startupResults.append(startupTime)
+        firstResponseResults.append(firstResponseTime)
 
     # print stats
     print(f"\nResults for image: {image} and opts: {javaOpts}")
@@ -648,21 +821,14 @@ def runBenchmarkIteratively(numIter, image, javaOpts):
     print("\tAvg={avgThr:7.1f}  RSS={rss:7.0f} MB  PeakRSS={peakRss:7.0f} MB  CPU={cpu:7.1f} sec".
           format(avgThr=nanmean(thrAvgResults), rss=nanmean(rssResults), peakRss=nanmean(peakRssResults), cpu=nanmean(cpuResults)))
 
-    avg, stdDev, min, max, ci95 = computeStats(thrAvgResults)
-    print("Thr stats:      Avg={avg:7.1f}  StdDev={stdDev:7.1f}  Min={min:7.1f}  Max={max:7.1f}  Max/Min={maxmin:7.1f} CI95={ci95:7.1f}%".
-                        format(avg=avg, stdDev=stdDev, min=min, max=max, maxmin=max/min, ci95=ci95))
+    printStats(thrAvgResults, "Thr stats:")
+    printStats(rssResults, "RSS stats:")
+    printStats(peakRssResults, "Peak RSS stats:")
+    printStats(cpuResults, "CompCPU stats:")
+    printStats(startupResults, "StartTime stats:")
+    if getFirstResponseTime:
+        printStats(firstResponseResults, "FirstResp stats:")
 
-    avg, stdDev, min, max, ci95 = computeStats(rssResults)
-    print("RSS stats:      Avg={avg:7.1f}  StdDev={stdDev:7.1f}  Min={min:7.1f}  Max={max:7.1f}  Max/Min={maxmin:7.1f} CI95={ci95:7.1f}%".
-                        format(avg=avg, stdDev=stdDev, min=min, max=max, maxmin=max/min, ci95=ci95))
-
-    avg, stdDev, min, max, ci95 = computeStats(peakRssResults)
-    print("Peak RSS stats: Avg={avg:7.1f}  StdDev={stdDev:7.1f}  Min={min:7.1f}  Max={max:7.1f}  Max/Min={maxmin:7.1f} CI95={ci95:7.1f}%".
-                        format(avg=avg, stdDev=stdDev, min=min, max=max, maxmin=max/min, ci95=ci95))
-
-    avg, stdDev, min, max, ci95 = computeStats(cpuResults)
-    print("CompCPU stats:  Avg={avg:7.1f}  StdDev={stdDev:7.1f}  Min={min:7.1f}  Max={max:7.1f}  Max/Min={maxmin:7.1f} CI95={ci95:7.1f}%".
-                        format(avg=avg, stdDev=stdDev, min=min, max=max, maxmin=max/min, ci95=ci95))
     if useJITServer:
         stopJITServer()
 
