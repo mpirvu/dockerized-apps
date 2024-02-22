@@ -34,6 +34,7 @@ memLimit        = "-m=512m"
 delayToStart    = 15 # seconds; waiting for the AppServer to start before checking for valid startup
 extraDockerOpts = "" # extra options to pass to docker run
 instantOnRestore= False # Set to true to add --cap-add=CHECKPOINT_RESTORE to docker run command
+postRestoreOpts = "-XX:-UseJITServer -XX:+JITServerLogConnections" if instantOnRestore else "" # Options to add to the JVM for restore
 doApplyLoad     = True # Set to false to skip load generation
 getFirstResponseTime = False # Set to true to get the first response time
 firstResponseHelperScript = "./loop_curl.sh" # Script to get the first response time
@@ -72,10 +73,15 @@ maxUsers                = 199 # Maximum number of simulated AcmeAir users
 
 ################# JITServer CONFIG ###############
 # JITServer is automatically launched if the JVM option include -XX:+UseJITServer
-JITServerMachine = "9.46.116.36" # if applicable
-JITServerUsername = "" # To connect to JITServerMachine; leave empty for connecting without ssh
-JITServerImage   = "localhost/liberty-acmeair-ee8:J17-20240202"
+JITServerMachine       = "9.46.116.36" # if applicable
+JITServerUsername      = "" # To connect to JITServerMachine; leave empty for connecting without ssh
+JITServerImage         = "localhost/liberty-acmeair-ee8:24.0.0.1-J21-instanton" #"localhost/liberty-acmeair-ee8:24.0.0.1-J21-instanton"
 JITServerContainerName = "jitserver"
+JITServerOptions       = "-XX:+JITServerLogConnections -Xdump:directory=/tmp/vlogs" # Options to pass to the JITServer
+JITServerUseEncryption = False
+KeyAndCertificateDir   = "/home/mpirvu/secrets" # Only used if JITServerUseEncryption = True
+SecretsDirInContainer  = "/tmp/secrets" # Only used if JITServerUseEncryption = True
+
 
 
 # List of configs to run
@@ -422,8 +428,25 @@ def verifyAppServerInContainerIDStarted(instanceID, host, username):
 def startAppServerContainer(host, username, instanceName, image, port, cpus, mem, jvmArgs, mountOpts, mongoMachine):
     # vlogs can be created in /tmp/vlogs -v /tmp/vlogs:/tmp/vlogs
     #JITOPTS = "\"verbose={compilePerformance},verbose={JITServer}\""
-    instantONOpts = f"--cap-add=CHECKPOINT_RESTORE --security-opt seccomp=unconfined" if instantOnRestore else ""
-    remoteCmd = f"{docker} run -d {cpuLimit} {memLimit} {mountOpts} {instantONOpts} {netOpts} -e JVM_ARGS='{jvmArgs}' -e TR_PrintCompStats=1 -e TR_PrintCompTime=1 -e MONGO_HOST={mongoMachine} -e MONGO_PORT=27017 -e MONGO_DBNAME=acmeair -p {port}:9080 --name {instanceName} {image}"
+    # I using JITServer post restore, add its address to the JVM options
+    instantONOpts = ""
+    otherOpts = ""
+    if instantOnRestore:
+        restoreOpts = postRestoreOpts
+        if ("-XX:+UseJITServer" in postRestoreOpts):
+            restoreOpts = restoreOpts + f" -XX:JITServerAddress={JITServerMachine} "
+            if JITServerUseEncryption:
+                restoreOpts = restoreOpts + f" -XX:JITServerSSLRootCerts={SecretsDirInContainer}/cert.pem "
+                otherOpts = f"--mount type=bind,source={KeyAndCertificateDir},destination={SecretsDirInContainer}"
+        instantONOpts = f"-e OPENJ9_RESTORE_JAVA_OPTIONS='{restoreOpts}' --cap-add=CHECKPOINT_RESTORE --security-opt seccomp=unconfined"
+    else:
+        if ("-XX:+UseJITServer" in jvmArgs):
+            jvmArgs = jvmArgs + f" -XX:JITServerAddress={JITServerMachine} "
+            if JITServerUseEncryption:
+                jvmArgs = jvmArgs + f" -XX:JITServerSSLRootCerts={SecretsDirInContainer}/cert.pem "
+                otherOpts = f"--mount type=bind,source={KeyAndCertificateDir},destination={SecretsDirInContainer}"
+
+    remoteCmd = f"{docker} run -d {cpuLimit} {memLimit} {mountOpts} {instantONOpts} {netOpts} {otherOpts} -e JVM_ARGS='{jvmArgs}' -e TR_PrintCompStats=1 -e TR_PrintCompTime=1 -e MONGO_HOST={mongoMachine} -e MONGO_PORT=27017 -e MONGO_DBNAME=acmeair -p {port}:9080 --name {instanceName} {image}"
     cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     logging.info("Starting liberty instance {instanceName}: {cmd}".format(instanceName=instanceName,cmd=cmd))
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
@@ -575,10 +598,16 @@ def getAppServerStartupTime(host, username, containerID, containerStartTimeMs, c
 def startJITServer():
     # -v /tmp/vlogs:/tmp/JITServer_vlog -e TR_Options=\"statisticsFrequency=10000,vlog=/tmp/vlogs/vlog.txt\"
     #JITOptions = "\"statisticsFrequency=10000,verbose={compilePerformance},verbose={JITServer},vlog=/tmp/vlogs/vlog.txt\""
-    OTHEROPTIONS= "'-Xdump:directory=/tmp/vlogs'"
+    #OTHEROPTIONS= f"'{JITServerOptions}'"
     JITOptions = ""
+    serverOpts = JITServerOptions
+    otherOpts = ""
+    if JITServerUseEncryption:
+        serverOpts = serverOpts + f" -XX:JITServerSSLKey={SecretsDirInContainer}/key.pem -XX:JITServerSSLCert={SecretsDirInContainer}/cert.pem "
+        otherOpts = f"--mount type=bind,source={KeyAndCertificateDir},destination={SecretsDirInContainer}"
+
     # -v /tmp/vlogs:/tmp/vlogs
-    remoteCmd = f"{docker} run -d -p 38400:38400 -p 38500:38500 --rm --cpus=8.0 --memory=4G {netOpts} -e TR_PrintCompMem=1 -e TR_PrintCompStats=1 -e TR_PrintCompTime=1 -e TR_PrintCodeCacheUsage=1 -e _JAVA_OPTIONS={OTHEROPTIONS} -e TR_Options={JITOptions} --name {JITServerContainerName} {JITServerImage} jitserver"
+    remoteCmd = f"{docker} run -d -p 38400:38400 -p 38500:38500 --rm --cpus=8.0 --memory=4G {netOpts} {otherOpts} -e TR_PrintCompMem=1 -e TR_PrintCompStats=1 -e TR_PrintCompTime=1 -e TR_PrintCodeCacheUsage=1 -e _JAVA_OPTIONS='{serverOpts}' -e TR_Options={JITOptions} --name {JITServerContainerName} {JITServerImage} jitserver"
     cmd = f"ssh {JITServerUsername}@{JITServerMachine} \"{remoteCmd}\"" if JITServerUsername else remoteCmd
     logging.info(f"Start JITServer: {cmd}")
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
@@ -777,7 +806,7 @@ def runBenchmarkIteratively(numIter, image, javaOpts):
     if doColdRun:
         clearSCC(appServerMachine, username)
 
-    useJITServer = "-XX:+UseJITServer" in javaOpts
+    useJITServer = ("-XX:+UseJITServer" in javaOpts) or (instantOnRestore and ("-XX:+UseJITServer" in postRestoreOpts))
     if useJITServer:
         startJITServer()
         time.sleep(1) # Give JITServer some time to start
