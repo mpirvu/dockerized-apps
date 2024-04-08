@@ -2,7 +2,7 @@
 # Results appear on /output in the container
 # Must specify the hostname for the acmeair application (or localhost will be assumed)
 
-FROM docker.io/eclipse-temurin:17.0.6_10-jre-jammy
+FROM docker.io/eclipse-temurin:17-jre-focal
 
 ENV JMETER_VERSION 5.3
 
