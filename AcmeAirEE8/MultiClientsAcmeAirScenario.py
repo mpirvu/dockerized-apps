@@ -203,7 +203,7 @@ def dict_mean(dict_list):
 
 def getMainPIDFromContainer(host, username, instanceID):
     remoteCmd = f"{docker} inspect " + "--format='{{.State.Pid}}' " + instanceID
-    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     try:
         output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
         lines = output.splitlines()
@@ -221,7 +221,7 @@ def getJavaPIDFromContainer(host, username, instanceID):
     logging.debug("Main PID from container is {mainPID}".format(mainPID=mainPID))
     # Find all PIDs running on host
     remoteCmd = "ps -eo ppid,pid,cmd --no-headers"
-    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
     lines = output.splitlines()
     pattern = re.compile("^\s*(\d+)\s+(\d+)\s+(\S+)")
@@ -263,7 +263,7 @@ def getJavaPIDFromContainer(host, username, instanceID):
 def clearSCC(host, username, SCCVolumeName):
     logging.info("Clearing SCC")
     remoteCmd = f"{docker} volume rm --force {SCCVolumeName}"
-    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     subprocess.run(shlex.split(cmd), universal_newlines=True)
     # TODO: make sure volume does not exist
 
@@ -313,7 +313,7 @@ def getRss(host, username, pid):
     # get pseudo file  /proc/<pid>/status
     filename = "/proc/" + pid + "/status"
     remoteCmd = f"cat {filename}"
-    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     try:
         s = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
         #lines = s.splitlines()
@@ -343,7 +343,7 @@ def getPss(host, username, pid):
     # get pseudo file /prod/pid/smaps_rollup
     filename = "/proc/" + pid + "/smaps_rollup"
     remoteCmd = f"cat {filename}"
-    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     try:
         s = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
         #lines = s.splitlines()
@@ -361,25 +361,25 @@ def getPss(host, username, pid):
 
 def removeContainer(host, username, instanceName):
     remoteCmd = f"{docker} rm {instanceName}"
-    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     logging.info("Removing container instance {instanceName}: {cmd}".format(instanceName=instanceName,cmd=cmd))
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
 
 def removeForceContainer(instanceName):
     remoteCmd = f"{docker} rm -f {instanceName}"
-    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     logging.info("Removing container instance {instanceName}: {cmd}".format(instanceName=instanceName,cmd=cmd))
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
 
 def stopContainersFromImage(host, username, imageName):
     # Find all running containers from image
     remoteCmd = f"{docker} ps --quiet --filter ancestor={imageName}"
-    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
     lines = output.splitlines()
     for containerID in lines:
         remoteCmd = f"{docker} stop {containerID}"
-        cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+        cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
         print("Stopping container: ", cmd)
         output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
 
@@ -388,24 +388,24 @@ def removeContainersFromImage(host, username, imageName):
     stopContainersFromImage(host, username, imageName)
     # Now remove stopped containes
     remoteCmd = f"{docker} ps -a --quiet --filter ancestor={imageName}"
-    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
     lines = output.splitlines()
     for containerID in lines:
         remoteCmd = f"{docker} rm {containerID}"
-        cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+        cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
         print("Removing container: ", cmd)
         output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
 
 # start mongo on a remote machine
 def startMongo(host, username, mongoImage):
     remoteCmd = f"{docker} run --rm -d --net=host --name mongodb {mongoImage} --nojournal"
-    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     logging.info("Starting mongo: {cmd}".format(cmd=cmd))
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
     time.sleep(2)
     remoteCmd = f"{docker} exec mongodb mongorestore --drop /AcmeAirDBBackup"
-    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
     print(output)
 
@@ -421,12 +421,12 @@ def startMongos(machines, numMachines, username, mongoImage):
 def stopMongo(host, username):
     # find the ID of the container, if any
     remoteCmd = f"{docker} ps --quiet --filter name=mongodb"
-    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
     lines = output.splitlines()
     for containerID in lines:
         remoteCmd = f"{docker} stop {containerID}"
-        cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+        cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
         logging.info("Stopping mongo: {cmd}".format(cmd=cmd))
         output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
 
@@ -440,7 +440,7 @@ def stopMongos(machines, numMachines, username):
 
 def verifyLibertyHasStarted(instanceName, host, username):
     remoteCmd = f"{docker} ps --quiet --filter name={instanceName}" # Note that this can return any partial matches
-    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
     lines = output.splitlines()
     if not lines:
@@ -453,7 +453,7 @@ def verifyLibertyHasStarted(instanceName, host, username):
     for containerID in lines:
         for iter in range(10):
             remoteCmd = f"{docker} logs --tail=100 {containerID}"
-            cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+            cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
             output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
             liblines = output.splitlines()
             for line in liblines:
@@ -470,7 +470,7 @@ def verifyLibertyHasStarted(instanceName, host, username):
 
 def verifyLibertyContainerIDStarted(instanceID, host, username):
     remoteCmd = f"{docker} ps --quiet --filter id={instanceID}"
-    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
     lines = output.splitlines()
     if not lines:
@@ -478,7 +478,7 @@ def verifyLibertyContainerIDStarted(instanceID, host, username):
         return False
 
     remoteCmd = f"{docker} logs --tail=100 {instanceID}"
-    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     errPattern = re.compile('.+\[ERROR')
     readyPattern = re.compile(".+is ready to run a smarter planet")
     for iter in range(15):
@@ -502,7 +502,7 @@ def startLiberty(host, username, instanceName, containerImage, port, cpus, mem, 
     #JITOPTS = "\"verbose={compilePerformance},verbose={JITServer}\""
     instantONOpts = f"-e OPENJ9_RESTORE_JAVA_OPTIONS='{postRestoreOpts}' --cap-add=CHECKPOINT_RESTORE --security-opt seccomp=unconfined" if instantOnRestore else ""
     remoteCmd = f"{docker} run -d --cpus={cpus} -m={mem} {mountOpts} {instantONOpts} {netOpts} -e JVM_ARGS='{jvmargs}' -e TR_PrintCompStats=1 -e TR_PrintCompTime=1 -e MONGO_HOST={mongoMachine} -e MONGO_PORT=27017 -e MONGO_DBNAME=acmeair -p {port}:9080 --name {instanceName} {containerImage}"
-    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     logging.info("Starting liberty instance {instanceName}: {cmd}".format(instanceName=instanceName,cmd=cmd))
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
     lines = output.splitlines()
@@ -529,7 +529,7 @@ def stopLibertyByName(instanceName):
 
 def stopLibertyByID(host, username, containerID):
     remoteCmd = f"{docker} ps --quiet --filter id={containerID}"
-    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     logging.info("Stopping container {containerID}".format(containerID=containerID))
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
     lines = output.splitlines()
@@ -537,7 +537,7 @@ def stopLibertyByID(host, username, containerID):
         logging.warning("Liberty instance {containerID} does not exist. Might have crashed".format(containerID=containerID))
         return False
     remoteCmd = f"{docker} stop {containerID}"
-    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     subprocess.check_output(shlex.split(cmd), universal_newlines=True)
     return True
 
@@ -547,10 +547,10 @@ def getLibertyStartupTime(host, username, containerID, containerStartTimeMs):
     logFileOnHost = f"messages.log.{containerID}"
     localLogFile = logFileOnHost + ".local"
     remoteCmd = f"{docker} cp {containerID}:/logs/messages.log {logFileOnHost}"
-    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
     # Copy the log file from the remote host to the local machine
-    cmd = f"scp {username}@{host}:{logFileOnHost} {localLogFile}"
+    cmd = f"scp {username}@{host}:{logFileOnHost} {localLogFile}" if username else f"cp {logFileOnHost} {localLogFile}"
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
     try:
         f = open(localLogFile, 'r')
@@ -560,7 +560,7 @@ def getLibertyStartupTime(host, username, containerID, containerStartTimeMs):
         logging.warning("Cannot open {filename}: {msg}".format(filename=localLogFile,msg=str(ioe)))
         return 0
     # must remove the logFile
-    cmd = f"ssh {username}@{host} rm {logFileOnHost}"
+    cmd = f"ssh {username}@{host} rm {logFileOnHost}" if username else remoteCmd
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
     cmd = f"rm {localLogFile}"
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
@@ -588,14 +588,14 @@ def getLibertyStartupTime(host, username, containerID, containerStartTimeMs):
 
 def printLibertyOutput(host, username, instanceName):
     remoteCmd = f"{docker} logs {instanceName}"
-    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
     print(output)
 
 def getCompCPUFromContainer(host, username, instanceID):
     logging.debug("Computing CompCPU for Liberty instance {instanceID}".format(instanceID=instanceID))
     remoteCmd = f"{docker} ps -a --quiet --filter id={instanceID}"
-    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
     lines = output.splitlines()
     if not lines:
@@ -604,7 +604,7 @@ def getCompCPUFromContainer(host, username, instanceID):
 
     threadTime = 0
     remoteCmd = f"{docker} logs --tail=25 {instanceID}" # I need to capture stderr as well
-    cmd = f"ssh {username}@{host} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True, stderr=subprocess.STDOUT)
     liblines = output.splitlines()
     compTimePattern = re.compile("Time spent in compilation thread =(\d+) ms")
@@ -621,39 +621,39 @@ def startJITServer(containerName, JITServerImage, port, JITServerMachine, userna
     JITOptions = ""
     # -v /tmp/vlogs:/tmp/vlogs
     remoteCmd = f"{docker} run -d -p {port}:38400 -p 38500:38500 --rm --cpus=8.0 --memory=4G {netOpts} -e TR_PrintCompMem=1 -e TR_PrintCompStats=1 -e TR_PrintCompTime=1 -e TR_PrintCodeCacheUsage=1 -e _JAVA_OPTIONS={OTHEROPTIONS} -e TR_Options={JITOptions} --name {containerName} {JITServerImage} jitserver"
-    cmd = f"ssh {username}@{JITServerMachine} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{JITServerMachine} \"{remoteCmd}\"" if username else remoteCmd
     print(datetime.datetime.now(), " Start JITServer:", cmd)
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
 
 def stopJITServer(containerName, JITServerMachine, username):
     # find the ID of the container, if any
     remoteCmd = f"{docker} ps --quiet --filter name={containerName}"
-    cmd = f"ssh {username}@{JITServerMachine} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{JITServerMachine} \"{remoteCmd}\"" if username else remoteCmd
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
     lines = output.splitlines()
     for containerID in lines:
         remoteCmd = f"{docker} stop {containerID}"
-        cmd = f"ssh {username}@{JITServerMachine} \"{remoteCmd}\""
+        cmd = f"ssh {username}@{JITServerMachine} \"{remoteCmd}\"" if username else remoteCmd
         print(datetime.datetime.now(), " Stop JITServer:", cmd)
         output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
 
 # Run jmeter remotely
 def applyLoad(containerName, jmeterImage, jmeterMachine, username, libertyMachine, port, numClients, duration, firstUser, lastUser):
     remoteCmd = f"{docker} run -d -e JTHREAD={numClients} -e JDURATION={duration} -e JUSERBOTTOM={firstUser} -e JUSER={lastUser} -e JHOST={libertyMachine} -e JPORT={port} --name {containerName} {jmeterImage}"
-    cmd = f"ssh {username}@{jmeterMachine} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{jmeterMachine} \"{remoteCmd}\"" if username else remoteCmd
     logging.info("Apply load: {cmd}".format(cmd=cmd))
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
 
 def stopJMeter(containerName, jmeterMachine, username):
     remoteCmd = f"{docker} rm {containerName}"
-    cmd = f"ssh {username}@{jmeterMachine} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{jmeterMachine} \"{remoteCmd}\"" if username else remoteCmd
     logging.info("Removing jmeter: {cmd}".format(cmd=cmd))
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
 
 def getJMeterSummary(containerName, jmeterMachine, username):
     logging.debug("Getting throughput info...")
     remoteCmd = f"{docker} logs --tail=100 {containerName}"
-    cmd = f"ssh {username}@{jmeterMachine} \"{remoteCmd}\""
+    cmd = f"ssh {username}@{jmeterMachine} \"{remoteCmd}\"" if username else remoteCmd
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
     lines = output.splitlines()
 
@@ -725,19 +725,22 @@ def cleanup(machines, numSlots, JITServerMachine, username, libertyImage, jmeter
     for machine in libertyMachineSet:
         stopContainersFromImage(machine, username, libertyImage)
         # Prune any stopped containers on all machines we are going to use
-        cmd = f"ssh {username}@{machine} \"{docker} container prune -f\""
+        remoteCmd = f"{docker} container prune -f"
+        cmd = f"ssh {username}@{machine} \"{remoteCmd}\"" if username else remoteCmd
         subprocess.check_output(shlex.split(cmd), universal_newlines=True)
         if useSCCVolume:
             clearSCC(machine, username, SCCVolumeName)
     for machine in jmeterMachineSet:
         stopContainersFromImage(machine, username, jmeterImage)
         # Prune any stopped containers on all machines we are going to use
-        cmd = f"ssh {username}@{machine} \"{docker} container prune -f\""
+        remoteCmd = f"{docker} container prune -f"
+        cmd = f"ssh {username}@{machine} \"{remoteCmd}\"" if username else remoteCmd
         subprocess.check_output(shlex.split(cmd), universal_newlines=True)
     for machine in mongoMachineSet:
         stopContainersFromImage(machine, username, mongoImage)
         # Prune any stopped containers on all machines we are going to use
-        cmd = f"ssh {username}@{machine} \"{docker} container prune -f\""
+        remoteCmd = f"{docker} container prune -f"
+        cmd = f"ssh {username}@{machine} \"{remoteCmd}\"" if username else remoteCmd
         subprocess.check_output(shlex.split(cmd), universal_newlines=True)
 
     if JITServerMachine:
@@ -775,7 +778,7 @@ def threadFunction(id, username, numIter, libImage, libertyMachine, port, cpuLim
 
                 # Wait for load to finish
                 remoteCmd = f"{docker} wait {jmeterInstanceName}"
-                cmd = f"ssh {username}@{jmeterMachine} \"{remoteCmd}\""
+                cmd = f"ssh {username}@{jmeterMachine} \"{remoteCmd}\"" if username else remoteCmd
                 logging.info("Wait for {jmeter} to end: {cmd}".format(jmeter=jmeterInstanceName, cmd=cmd))
                 subprocess.run(shlex.split(cmd), universal_newlines=True)
 
