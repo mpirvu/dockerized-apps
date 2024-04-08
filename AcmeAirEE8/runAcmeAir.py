@@ -83,6 +83,12 @@ KeyAndCertificateDir   = "/home/mpirvu/secrets" # Only used if JITServerUseEncry
 SecretsDirInContainer  = "/tmp/secrets" # Only used if JITServerUseEncryption = True
 
 
+memAnalysis = False # Collect javacores and smaps for memory analysis
+dirForMemAnalysisFiles = "/tmp/vlogs" # This is where the javacore will appear inside the container
+# This will only work if the JVM runs locally on the same machine where the script is run
+# The directory below must exist and have proper write permissions
+localDirForMemAnalysisFiles = "/tmp/vlogs" # This is where the javacore will be copied to on the host
+extraArgsForMemAnalysis = f" -Dcom.ibm.dbgmalloc=true -Xdump:none -Xdump:system:events=user,file={dirForMemAnalysisFiles}/core.%pid.%seq.dmp -Xdump:java:events=user,file={dirForMemAnalysisFiles}/javacore.%pid.%seq.txt "
 
 # List of configs to run
 # Each entry is a dictionary with "image" and "args" as keys
@@ -248,7 +254,7 @@ def getJavaPIDFromContainer(host, username, instanceID):
     if len(javaPIDs) > 1:
         logging.error("Found more than one Java process in container {instanceID}".format(instanceID=instanceID))
         return 0
-    return javaPIDs[0]
+    return int(javaPIDs[0])
 
 # Given a container ID, find all the Java processes running in it
 # If there is only one Java process, return its PID
@@ -295,7 +301,7 @@ def getJavaPIDFromContainer(host, username, instanceID):
     if len(javaPIDs) > 1:
         logging.error("Found more than one Java process in container {instanceID}".format(instanceID=instanceID))
         return 0
-    return javaPIDs[0]
+    return int(javaPIDs[0])
 
 def removeForceContainer(host, username, instanceName):
     remoteCmd = f"{docker} rm -f {instanceName}"
@@ -359,11 +365,31 @@ def startMongo(host, username, mongoImage):
     logging.info("Starting mongo: {cmd}".format(cmd=cmd))
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
 
+def collectJavacore(javaPID):
+    # Produce javacore file
+    cmd = f"kill -3 {javaPID}" # Send SIGQUIT to the Java process
+    logging.info("Generating javacore by sending SIGQUIT with {cmd}".format(cmd=cmd))
+    subprocess.run(shlex.split(cmd), universal_newlines=True)
+    logging.info("Sleeping for 60 seconds to produce the coredump and javacore...")
+    time.sleep(60)
+
+def collectSmaps(javaPID):
+    # Get smaps file
+    cmd = f"cp /proc/{javaPID}/smaps {dirForMemAnalysisFiles}/smaps.{javaPID}"
+    try:
+        subprocess.run(shlex.split(cmd), universal_newlines=True)
+    except:
+        logging.error("Cannot get smaps file for javaPID {javaPID}".format(javaPID=javaPID))
+
+def collectJavacoreAndSmaps(javaPID):
+    collectSmaps(javaPID)
+    collectJavacore(javaPID)
+
 # Given a PID, return RSS and peakRSS in MB for the process
 def getRss(host, username, pid):
     _scale = {'kB': 1024, 'mB': 1024*1024, 'KB': 1024, 'MB': 1024*1024}
     # get pseudo file  /proc/<pid>/status
-    filename = "/proc/" + pid + "/status"
+    filename = "/proc/" + str(pid) + "/status"
     remoteCmd = f"cat {filename}"
     cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     try:
@@ -425,7 +451,7 @@ def verifyAppServerInContainerIDStarted(instanceID, host, username):
         logging.warning("Checking again")
     return False
 
-def startAppServerContainer(host, username, instanceName, image, port, cpus, mem, jvmArgs, mountOpts, mongoMachine):
+def startAppServerContainer(host, username, instanceName, image, port, cpus, mem, jvmArgs, mountOpts, mongoMachine, doMemAnalysis):
     # vlogs can be created in /tmp/vlogs -v /tmp/vlogs:/tmp/vlogs
     #JITOPTS = "\"verbose={compilePerformance},verbose={JITServer}\""
     # I using JITServer post restore, add its address to the JVM options
@@ -438,6 +464,8 @@ def startAppServerContainer(host, username, instanceName, image, port, cpus, mem
             if JITServerUseEncryption:
                 restoreOpts = restoreOpts + f" -XX:JITServerSSLRootCerts={SecretsDirInContainer}/cert.pem "
                 otherOpts = f"--mount type=bind,source={KeyAndCertificateDir},destination={SecretsDirInContainer}"
+        if doMemAnalysis:
+            restoreOpts = restoreOpts + extraArgsForMemAnalysis
         instantONOpts = f"-e OPENJ9_RESTORE_JAVA_OPTIONS='{restoreOpts}' --cap-add=CHECKPOINT_RESTORE --security-opt seccomp=unconfined"
     else:
         if ("-XX:+UseJITServer" in jvmArgs):
@@ -446,7 +474,12 @@ def startAppServerContainer(host, username, instanceName, image, port, cpus, mem
                 jvmArgs = jvmArgs + f" -XX:JITServerSSLRootCerts={SecretsDirInContainer}/cert.pem "
                 otherOpts = f"--mount type=bind,source={KeyAndCertificateDir},destination={SecretsDirInContainer}"
 
-    remoteCmd = f"{docker} run -d {cpuLimit} {memLimit} {mountOpts} {instantONOpts} {netOpts} {otherOpts} -e JVM_ARGS='{jvmArgs}' -e TR_PrintCompStats=1 -e TR_PrintCompTime=1 -e MONGO_HOST={mongoMachine} -e MONGO_PORT=27017 -e MONGO_DBNAME=acmeair -p {port}:9080 --name {instanceName} {image}"
+    # If we want to do memory analysis we need to collect the javacores from the container
+    # Mount a directory from the machine into the container
+    if doMemAnalysis:
+        otherOpts = otherOpts + f" -v {localDirForMemAnalysisFiles}:{dirForMemAnalysisFiles} "
+
+    remoteCmd = f"{docker} run -d {extraDockerOpts} {cpuLimit} {memLimit} {mountOpts} {instantONOpts} {netOpts} {otherOpts} -e JVM_ARGS='{jvmArgs}' -e TR_PrintCompStats=1 -e TR_PrintCompTime=1 -e MONGO_HOST={mongoMachine} -e MONGO_PORT=27017 -e MONGO_DBNAME=acmeair -p {port}:9080 --name {instanceName} {image}"
     cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     logging.info("Starting liberty instance {instanceName}: {cmd}".format(instanceName=instanceName,cmd=cmd))
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
@@ -730,7 +763,7 @@ def runPhase(duration, numClients):
         logging.error(f"JMeter encountered {errors} errors")
     return thr, elapsed, peakThr, errors
 
-def runBenchmarkOnce(image, javaOpts):
+def runBenchmarkOnce(image, javaOpts, doMemAnalysis):
     # Will apply load in small bursts
     maxPulses = numRepetitionsOneClient + numRepetitions50Clients
     thrResults = [math.nan for i in range(maxPulses)] # np.full((maxPulses), fill_value=np.nan, dtype=np.float)
@@ -749,7 +782,7 @@ def runBenchmarkOnce(image, javaOpts):
     crtTime = datetime.datetime.now()
     containerStartTimeMs = (crtTime.minute * 60 + crtTime.second)*1000 + crtTime.microsecond//1000
 
-    instanceID = startAppServerContainer(host=appServerMachine, username=username, instanceName=containerName, image=image, port=appServerPort, cpus=cpuLimit, mem=memLimit, jvmArgs=javaOpts, mountOpts=mountOpts, mongoMachine=mongoMachine)
+    instanceID = startAppServerContainer(host=appServerMachine, username=username, instanceName=containerName, image=image, port=appServerPort, cpus=cpuLimit, mem=memLimit, jvmArgs=javaOpts, mountOpts=mountOpts, mongoMachine=mongoMachine, doMemAnalysis=doMemAnalysis)
     if instanceID is None:
         return thrResults, rss, peakRss, cpu
 
@@ -770,9 +803,13 @@ def runBenchmarkOnce(image, javaOpts):
     # Collect RSS at end of run
     serverPID = getJavaPIDFromContainer(host=appServerMachine, username=username, instanceID=instanceID)
 
-    if int(serverPID) > 0:
+    if serverPID > 0:
         rss, peakRss = getRss(host=appServerMachine, username=username, pid=serverPID)
         logging.debug("Memory: RSS={rss} MB  PeakRSS={peak} MB".format(rss=rss,peak=peakRss))
+        if doMemAnalysis:
+            logging.info("Generating javacore, core and smaps for process {pid}".format(pid=serverPID))
+            collectJavacoreAndSmaps(serverPID)
+            time.sleep(20)
     else:
         logging.warning("Cannot get server PID. RSS will not be available")
     time.sleep(2)
@@ -812,7 +849,11 @@ def runBenchmarkIteratively(numIter, image, javaOpts):
         time.sleep(1) # Give JITServer some time to start
 
     for iter in range(numIter):
-        thrList, peakThroughput, rss, peakRss, cpu, startupTime, firstResponseTime = runBenchmarkOnce(image, javaOpts)
+        # if memAnalysis is True, add the options required for memory analysis, but only for the last iteration
+        doMemAnalysis = memAnalysis and iter == numIter - 1
+        if doMemAnalysis:
+            javaOpts = javaOpts + extraArgsForMemAnalysis
+        thrList, peakThroughput, rss, peakRss, cpu, startupTime, firstResponseTime = runBenchmarkOnce(image, javaOpts, doMemAnalysis)
         lastThr = meanLastValues(thrList, numMeasurementTrials) # average for last N pulses
         print("Run {iter}: Thr={lastThr:6.1f} RSS={rss:6.0f} MB  PeakRSS={peakRss:6.0f} MB  CPU={cpu:6.1f} sec  PeakThroughput={pt:6.1f}".
               format(iter=iter, lastThr=lastThr, rss=rss, peakRss=peakRss, cpu=cpu, pt=peakThroughput))
