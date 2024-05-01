@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<server description="OpenLiberty Microprofile Server">
+    <featureManager>
+        <feature>cdi-2.0</feature>
+        <feature>jaxrs-2.1</feature>
+    </featureManager>
+    <!--executor name="LargeThreadPool" id="default" coreThreads="32" maxThreads="32"/-->
+    <!--executor name="LargeThreadPool" id="default"  maxThreads="4"/-->
+    <httpEndpoint id="defaultHttpEndpoint" host="*" httpPort="9080" httpsPort="9443">
+      <httpOptions maxKeepAliveRequests="-1" />
+    </httpEndpoint>
+    <cdi12 enableImplicitBeanArchives="false"/>
+    <webApplication contextRoot="pingperf" location="pingperf.war" deferServletLoad="false" />
+</server>
