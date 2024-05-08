@@ -7,7 +7,7 @@ EXPOSE 9080
 RUN features.sh
 
 #ENV OPENJ9_SCC=false
-ENV WARM_ENDPOINT=true
+#ENV WARM_ENDPOINT=true
 ENV VERBOSE=true
 RUN configure.sh
 
