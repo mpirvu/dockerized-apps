@@ -75,7 +75,7 @@ maxUsers                = 199 # Maximum number of simulated AcmeAir users
 # JITServer is automatically launched if the JVM option include -XX:+UseJITServer
 JITServerMachine       = "9.46.116.36" # if applicable
 JITServerUsername      = "" # To connect to JITServerMachine; leave empty for connecting without ssh
-JITServerImage         = "localhost/liberty-acmeair-ee8:24.0.0.1-J21-instanton" #"localhost/liberty-acmeair-ee8:24.0.0.1-J21-instanton"
+JITServerImage         = "" # leave empty to use the Liberty image as JITServer
 JITServerContainerName = "jitserver"
 JITServerOptions       = "-XX:+JITServerLogConnections -Xdump:directory=/tmp/vlogs" # Options to pass to the JITServer
 JITServerUseEncryption = False
@@ -628,7 +628,7 @@ def getAppServerStartupTime(host, username, containerID, containerStartTimeMs, c
 
     return startupTime, firstResponseTime
 
-def startJITServer():
+def startJITServer(serverImage):
     # -v /tmp/vlogs:/tmp/JITServer_vlog -e TR_Options=\"statisticsFrequency=10000,vlog=/tmp/vlogs/vlog.txt\"
     #JITOptions = "\"statisticsFrequency=10000,verbose={compilePerformance},verbose={JITServer},vlog=/tmp/vlogs/vlog.txt\""
     #OTHEROPTIONS= f"'{JITServerOptions}'"
@@ -640,7 +640,7 @@ def startJITServer():
         otherOpts = f"--mount type=bind,source={KeyAndCertificateDir},destination={SecretsDirInContainer}"
 
     # -v /tmp/vlogs:/tmp/vlogs
-    remoteCmd = f"{docker} run -d -p 38400:38400 -p 38500:38500 --rm --cpus=8.0 --memory=4G {netOpts} {otherOpts} -e TR_PrintCompMem=1 -e TR_PrintCompStats=1 -e TR_PrintCompTime=1 -e TR_PrintCodeCacheUsage=1 -e _JAVA_OPTIONS='{serverOpts}' -e TR_Options={JITOptions} --name {JITServerContainerName} {JITServerImage} jitserver"
+    remoteCmd = f"{docker} run -d -p 38400:38400 -p 38500:38500 --rm --cpus=8.0 --memory=4G {netOpts} {otherOpts} -e TR_PrintCompMem=1 -e TR_PrintCompStats=1 -e TR_PrintCompTime=1 -e TR_PrintCodeCacheUsage=1 -e _JAVA_OPTIONS='{serverOpts}' -e TR_Options={JITOptions} --name {JITServerContainerName} {serverImage} jitserver"
     cmd = f"ssh {JITServerUsername}@{JITServerMachine} \"{remoteCmd}\"" if JITServerUsername else remoteCmd
     logging.info(f"Start JITServer: {cmd}")
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
@@ -845,7 +845,9 @@ def runBenchmarkIteratively(numIter, image, javaOpts):
 
     useJITServer = ("-XX:+UseJITServer" in javaOpts) or (instantOnRestore and ("-XX:+UseJITServer" in postRestoreOpts))
     if useJITServer:
-        startJITServer()
+        # If the JITServer image has been specifically provided, use that; otherwise use the image for test
+        serverImage = JITServerImage if JITServerImage else image
+        startJITServer(serverImage)
         time.sleep(1) # Give JITServer some time to start
 
     for iter in range(numIter):
