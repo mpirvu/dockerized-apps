@@ -15,6 +15,7 @@ import re # for regular expressions
 import shlex, subprocess
 import sys # for exit
 import time # for sleep
+import os # for env vars
 
 ############################### CONFIG ###############################################
 #level=logging.DEBUG, logging.INFO, logging.WARNING
@@ -29,7 +30,7 @@ appServerMachine = "9.46.116.36"
 username = "" # for connecting remotely to the SUT; leave empty to connect without ssh
 containerName = "acmeair"
 appServerPort   = "9080"
-cpuLimit        = "--cpus=1.0" # This can also be used to specify CPU affinity if so desired
+cpuLimit        = "--cpuset-cpus=1 --cpus=1" # This can also be used to specify CPU affinity if so desired
 memLimit        = "-m=512m"
 delayToStart    = 15 # seconds; waiting for the AppServer to start before checking for valid startup
 extraDockerOpts = "" # extra options to pass to docker run
@@ -49,7 +50,7 @@ mountOpts       = f"--mount type=volume,src={SCCVolumeName},target={sccInstanceD
 mongoMachine       = "9.46.116.36"
 mongoUsername      = "" # To connect to mongoMachine remotely; leave empty to connect without ssh
 mongoImage         = "mongo-acmeair-ee8:5.0.15"
-mongoAffinity      = ""
+mongoAffinity      = "--cpuset-cpus 4,5,16,17"
 mongoInstanceName  = "mongodb1"
 
 ############### JMeter CONFIG ###############
@@ -57,7 +58,7 @@ jmeterMachine       = "9.46.116.36"
 jmeterUsername      = "" # To connect to JMeter machine; leave empty to connect without ssh
 jmeterImage         = "jmeter-acmeair:5.3"
 jmeterContainerName = "jmeter"
-jmeterAffinity      = "2-3"
+jmeterAffinity      = "--cpuset-cpus 6,7,18,19"
 printRampup         = True # If True, print all JMeter throughput values to plot rampup curve
 
 ################ Load CONFIG ###############
@@ -76,8 +77,10 @@ maxUsers                = 199 # Maximum number of simulated AcmeAir users
 JITServerMachine       = "9.46.116.36" # if applicable
 JITServerUsername      = "" # To connect to JITServerMachine; leave empty for connecting without ssh
 JITServerImage         = "" # leave empty to use the Liberty image as JITServer
+JITServerAffinity      = "--cpuset-cpus 8,9,10,11,20,21,22,23"
 JITServerContainerName = "jitserver"
-JITServerOptions       = "-XX:+JITServerLogConnections -Xdump:directory=/tmp/vlogs" # Options to pass to the JITServer
+JITServerOptions       = "-XX:+JITServerLogConnections -XX:+JITServerUseAOTCache -Xdump:directory=/tmp/vlogs" # Options to pass to the JITServer
+JITServerExtraOptions  = "-v /tmp/vlogs:/tmp/vlogs"
 JITServerUseEncryption = False
 KeyAndCertificateDir   = "/home/mpirvu/secrets" # Only used if JITServerUseEncryption = True
 SecretsDirInContainer  = "/tmp/secrets" # Only used if JITServerUseEncryption = True
@@ -360,7 +363,7 @@ def restoreDatabase(host, username, mongoImage):
 
 # start mongo on a remote machine
 def startMongo(host, username, mongoImage):
-    remoteCmd = f"{docker} run --rm -d --net=host --name {mongoInstanceName} {mongoImage} --nojournal"
+    remoteCmd = f"{docker} run --rm -d --net=host {mongoAffinity} --name {mongoInstanceName} {mongoImage} --nojournal"
     cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     logging.info("Starting mongo: {cmd}".format(cmd=cmd))
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
@@ -454,7 +457,8 @@ def verifyAppServerInContainerIDStarted(instanceID, host, username):
 def startAppServerContainer(host, username, instanceName, image, port, cpus, mem, jvmArgs, mountOpts, mongoMachine, doMemAnalysis):
     # vlogs can be created in /tmp/vlogs -v /tmp/vlogs:/tmp/vlogs
     #JITOPTS = "\"verbose={compilePerformance},verbose={JITServer}\""
-    # I using JITServer post restore, add its address to the JVM options
+    JITOPTS = ""
+    # If using JITServer post restore, add its address to the JVM options
     instantONOpts = ""
     otherOpts = ""
     if instantOnRestore:
@@ -479,7 +483,7 @@ def startAppServerContainer(host, username, instanceName, image, port, cpus, mem
     if doMemAnalysis:
         otherOpts = otherOpts + f" -v {localDirForMemAnalysisFiles}:{dirForMemAnalysisFiles} "
 
-    remoteCmd = f"{docker} run -d {extraDockerOpts} {cpuLimit} {memLimit} {mountOpts} {instantONOpts} {netOpts} {otherOpts} -e JVM_ARGS='{jvmArgs}' -e TR_PrintCompStats=1 -e TR_PrintCompTime=1 -e MONGO_HOST={mongoMachine} -e MONGO_PORT=27017 -e MONGO_DBNAME=acmeair -p {port}:9080 --name {instanceName} {image}"
+    remoteCmd = f"{docker} run -d {extraDockerOpts} {cpuLimit} {memLimit} {mountOpts} {instantONOpts} {netOpts} {otherOpts} -e TR_Options={JITOPTS} -e JVM_ARGS='{jvmArgs}' -e TR_PrintJITServerMsgStats=1 -e TR_PrintJITServerAOTCacheStats=1 -e TR_PrintCompStats=1 -e TR_PrintCompTime=1 -e MONGO_HOST={mongoMachine} -e MONGO_PORT=27017 -e MONGO_DBNAME=acmeair -p {port}:9080 --name {instanceName} {image}"
     cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     logging.info("Starting liberty instance {instanceName}: {cmd}".format(instanceName=instanceName,cmd=cmd))
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
@@ -529,7 +533,7 @@ def getCompCPUFromContainer(host, username, instanceID):
         return math.nan
 
     threadTime = 0.0
-    remoteCmd = f"{docker} logs --tail=25 {instanceID}" # I need to capture stderr as well
+    remoteCmd = f"{docker} logs --tail=200 {instanceID}" # I need to capture stderr as well
     cmd = f"ssh {username}@{host} \"{remoteCmd}\"" if username else remoteCmd
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True, stderr=subprocess.STDOUT)
     liblines = output.splitlines()
@@ -640,7 +644,7 @@ def startJITServer(serverImage):
         otherOpts = f"--mount type=bind,source={KeyAndCertificateDir},destination={SecretsDirInContainer}"
 
     # -v /tmp/vlogs:/tmp/vlogs
-    remoteCmd = f"{docker} run -d -p 38400:38400 -p 38500:38500 --rm --cpus=8.0 --memory=4G {netOpts} {otherOpts} -e TR_PrintCompMem=1 -e TR_PrintCompStats=1 -e TR_PrintCompTime=1 -e TR_PrintCodeCacheUsage=1 -e _JAVA_OPTIONS='{serverOpts}' -e TR_Options={JITOptions} --name {JITServerContainerName} {serverImage} jitserver"
+    remoteCmd = f"{docker} run -d -p 38400:38400 -p 38500:38500 --rm --memory=4G {JITServerAffinity} {netOpts} {otherOpts} {JITServerExtraOptions} -e TR_PrintCompMem=1 -e TR_PrintCompStats=1 -e TR_PrintCompTime=1 -e TR_PrintCodeCacheUsage=1 -e TR_PrintJITServerCacheStats=1 -e TR_PrintJITServerIPMsgStats=1 -e _JAVA_OPTIONS='{serverOpts}' -e TR_Options={JITOptions} --name {JITServerContainerName} {serverImage} jitserver"
     cmd = f"ssh {JITServerUsername}@{JITServerMachine} \"{remoteCmd}\"" if JITServerUsername else remoteCmd
     logging.info(f"Start JITServer: {cmd}")
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
@@ -667,7 +671,7 @@ def cleanup():
 
 # Run jmeter remotely
 def applyLoad(duration, numClients):
-    remoteCmd = f"{docker} run -d --network=host -e JTHREAD={numClients} -e JDURATION={duration} -e JUSER={maxUsers} -e JHOST={appServerMachine} -e JPORT={appServerPort} --name {jmeterContainerName} {jmeterImage}"
+    remoteCmd = f"{docker} run -d --network=host {jmeterAffinity} -e JTHREAD={numClients} -e JDURATION={duration} -e JUSER={maxUsers} -e JHOST={appServerMachine} -e JPORT={appServerPort} --name {jmeterContainerName} {jmeterImage}"
     cmd = f"ssh {jmeterUsername}@{jmeterMachine} \"{remoteCmd}\"" if jmeterUsername else remoteCmd
     logging.info("Apply load: {cmd}".format(cmd=cmd))
     output = subprocess.check_output(shlex.split(cmd), universal_newlines=True)
