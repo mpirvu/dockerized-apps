@@ -1,0 +1,43 @@
+# Dockerfile to build a jmeter container able to drive restCrud
+# Results appear on /output in the container
+# Must specify the hostname for the restCrud application (or localhost will be assumed)
+
+FROM eclipse-temurin:17-jre
+
+ENV JMETER_VERSION=5.5
+
+# Install pre-requisite packages
+RUN apt-get update && apt-get install -y --no-install-recommends wget unzip \
+       && rm -rf /var/lib/apt/lists/*
+
+# Install jmeter
+RUN   mkdir /jmeter \
+        && mkdir /output \
+        && cd /jmeter/ \
+        && wget https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-$JMETER_VERSION.tgz \
+        && tar -xzf apache-jmeter-$JMETER_VERSION.tgz \
+        && rm apache-jmeter-$JMETER_VERSION.tgz
+
+# Set jmeter home
+ENV JMETER_HOME=/jmeter/apache-jmeter-$JMETER_VERSION
+
+# Add jmeter to the PATH
+ENV PATH=$JMETER_HOME/bin:$PATH
+
+# Set JVM options
+ENV JVM_ARGS="-Xms1g -Xmx1g"
+
+# We should set summariser.interval=6 in bin/jmeter.properties
+RUN echo 'summariser.interval=6' >> $JMETER_HOME/bin/jmeter.properties
+
+# Copy the script to be executed and other needed files
+COPY DriverFiles/simple_waittime.jmx $JMETER_HOME/simple_waittime.jmx
+COPY DriverFiles/applyLoad.sh $JMETER_HOME/bin/applyLoad.sh
+RUN chmod u+x $JMETER_HOME/bin/applyLoad.sh
+
+
+# Environment variables that we want the user to redefine
+ENV JHOST=localhost JPORT=9090  JTHREAD=1 JDURATION=60 JRAMP=0 JTHINKTIME=0 JURL=/pingperf/ping/greeting
+
+ENTRYPOINT ["applyLoad.sh"]
+
